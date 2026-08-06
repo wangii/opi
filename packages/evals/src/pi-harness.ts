@@ -3,12 +3,14 @@ import { mkdir, mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { performance } from "node:perf_hooks";
+import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
 import { contentText } from "@earendil-works/pi-ai";
 import {
 	type AgentSession,
 	type CreateAgentSessionOptions,
 	createAgentSessionFromServices,
 	createAgentSessionServices,
+	type InlineExtension,
 	ModelRuntime,
 	SessionManager,
 	SettingsManager,
@@ -25,7 +27,9 @@ import {
 } from "vitest-evals/harness";
 import { PI_SESSION_SNAPSHOT_ARTIFACT } from "./vitest-evals/artifacts.ts";
 
-export type PiCodingAgentInput = string | Array<{ type: "prompt"; content: string } | { type: "reload" }>;
+export type PiCodingAgentInput =
+	| string
+	| Array<{ type: "prompt"; content: string } | { type: "reload" } | { type: "compact"; customInstructions?: string }>;
 
 type PiCodingAgentModelSelection = {
 	provider: string;
@@ -36,6 +40,12 @@ type PiCodingAgentHarnessOptions = {
 	name?: string;
 	model?: PiCodingAgentModelSelection;
 	noTools?: CreateAgentSessionOptions["noTools"];
+	tools?: string[];
+	thinkingLevel?: ThinkingLevel;
+	extensionFactories?: InlineExtension[];
+	extensionPaths?: string[];
+	extensionFlagValues?: Map<string, boolean | string>;
+	setupWorkspace?: (cwd: string) => Promise<void>;
 	transformSystemPrompt?: (defaultPrompt: string) => string;
 };
 
@@ -128,14 +138,22 @@ async function runPiCodingAgent<TOutput extends JsonValue>(
 	let outcome: { success: true; result: SimpleHarnessResult<string | TOutput> } | { success: false; error: unknown };
 	try {
 		await Promise.all([mkdir(cwd), mkdir(agentDir)]);
+		await options.setupWorkspace?.(cwd);
 		const services = await createAgentSessionServices({
 			cwd,
 			agentDir,
 			modelRuntime,
 			settingsManager: SettingsManager.inMemory(),
-			...(options.transformSystemPrompt
-				? { resourceLoaderOptions: { systemPromptOverride: () => transformedSystemPrompt } }
+			...(options.transformSystemPrompt || options.extensionFactories || options.extensionPaths
+				? {
+						resourceLoaderOptions: {
+							...(options.transformSystemPrompt ? { systemPromptOverride: () => transformedSystemPrompt } : {}),
+							...(options.extensionFactories ? { extensionFactories: options.extensionFactories } : {}),
+							...(options.extensionPaths ? { additionalExtensionPaths: options.extensionPaths } : {}),
+						},
+					}
 				: {}),
+			...(options.extensionFlagValues ? { extensionFlagValues: options.extensionFlagValues } : {}),
 		});
 		signal?.throwIfAborted();
 		sessionManager = SessionManager.create(cwd, join(root, "sessions"));
@@ -145,7 +163,8 @@ async function runPiCodingAgent<TOutput extends JsonValue>(
 				services,
 				sessionManager,
 				model,
-				thinkingLevel: "off",
+				thinkingLevel: options.thinkingLevel ?? "off",
+				...(options.tools ? { tools: options.tools } : {}),
 				noTools: options.noTools,
 			})
 		).session;
@@ -163,14 +182,16 @@ async function runPiCodingAgent<TOutput extends JsonValue>(
 		signal?.addEventListener("abort", abort, { once: true });
 		try {
 			signal?.throwIfAborted();
-			if (evalSession.extensionRunner.getExtensionPaths().length !== 0) {
-				throw new Error("Expected an isolated eval session to start without extensions.");
+			if (options.extensionFactories && options.extensionFactories.length > 0) {
+				await evalSession.bindExtensions({ mode: "print" });
 			}
 			const steps = typeof input === "string" ? [{ type: "prompt" as const, content: input }] : input;
 			let response: string | undefined;
 			for (const step of steps) {
 				if (step.type === "prompt") {
 					response = await promptAgent(evalSession, step.content, signal);
+				} else if (step.type === "compact") {
+					await evalSession.compact(step.customInstructions);
 				} else {
 					await evalSession.reload();
 				}

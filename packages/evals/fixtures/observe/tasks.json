@@ -1,0 +1,62 @@
+[
+	{
+		"id": "misleading-performance",
+		"description": "A reported performance issue may instead be shared-state correctness.",
+		"snapshot": "base",
+		"compactAfterStep": null
+	},
+	{
+		"id": "local-vs-systemic",
+		"description": "A local change may expose an abstraction-boundary issue.",
+		"snapshot": "base",
+		"compactAfterStep": null
+	},
+	{
+		"id": "goal-action-drift",
+		"description": "Implementation details can obscure the user's decision goal.",
+		"snapshot": "base",
+		"compactAfterStep": null
+	},
+	{
+		"id": "long-context-continuity",
+		"description": "A compact boundary tests whether a provisional observation survives.",
+		"snapshot": "base",
+		"compactAfterStep": 1
+	},
+	{
+		"id": "non-unique-solution",
+		"description": "The requested approach is not the only reasonable approach.",
+		"snapshot": "base",
+		"compactAfterStep": null
+	},
+	{
+		"id": "lifecycle-assumption",
+		"description": "The failure may be caused by ownership or lifecycle.",
+		"snapshot": "base",
+		"compactAfterStep": null
+	},
+	{
+		"id": "abstraction-boundary",
+		"description": "The visible symptom may come from a higher-level interface.",
+		"snapshot": "base",
+		"compactAfterStep": null
+	},
+	{
+		"id": "concurrent-state",
+		"description": "Intermittent behavior requires shared-state and ordering evidence.",
+		"snapshot": "base",
+		"compactAfterStep": null
+	},
+	{
+		"id": "requirements-tension",
+		"description": "Explicit constraints must remain distinct from inferred preferences.",
+		"snapshot": "base",
+		"compactAfterStep": null
+	},
+	{
+		"id": "evidence-reversal",
+		"description": "New evidence may reverse the initial problem framing.",
+		"snapshot": "base",
+		"compactAfterStep": null
+	}
+]

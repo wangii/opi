@@ -1,0 +1,12 @@
+{
+	"type": "object",
+	"required": ["id", "description", "snapshot"],
+	"properties": {
+		"id": { "type": "string" },
+		"description": { "type": "string" },
+		"prompt": { "type": "string" },
+		"snapshot": { "type": "string" },
+		"acceptance": { "type": "array", "items": { "type": "string" } },
+		"compactAfterStep": { "type": ["integer", "null"], "minimum": 1 }
+		}
+}
