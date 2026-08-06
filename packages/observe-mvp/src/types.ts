@@ -31,7 +31,7 @@ export interface ObserveAttemptDetails {
 	turnIndex: number;
 	timestamp: number;
 	arm: ObserveArm;
-	rejected: "arm-disabled" | "duplicate-in-turn";
+	rejected: "arm-disabled" | "duplicate-in-turn" | "action-required";
 }
 
 export interface DefaultObserveFrameDetails {
@@ -75,6 +75,7 @@ export interface ObserveState {
 	currentRunId: string | undefined;
 	currentTurnIndex: number;
 	observationUsed: boolean;
+	observationActionPending: boolean;
 	userInvitationPending: boolean;
 	defaultFrameAttempted: boolean;
 	activeFrame: ObserveFrame | undefined;

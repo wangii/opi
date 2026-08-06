@@ -23,7 +23,10 @@ Requirements:
 - return exactly one record for every source id;
 - choose disposition "retain" for evidence or commitments needed later;
 - choose disposition "trace" for a minimal operational fact such as an action and whether it succeeded;
-- choose disposition "drop" when the source adds no future value under this frame;
+- choose disposition "drop" only for redundant assistant narration that adds no future value under this frame;
+- never drop a user message, user commitment, assistant tool call, or tool result;
+- for every tool call/result, keep a concise operational trace of what was attempted, whether it succeeded or failed, and any substantive finding or state change;
+- retain assistant decisions, conclusions, plans, file changes, and unresolved blockers; drop only redundant narration;
 - preserve evidence that contradicts or pressures the frame;
 - keep hypotheses provisional;
 - do not copy raw wording when a shorter interpretation is sufficient;

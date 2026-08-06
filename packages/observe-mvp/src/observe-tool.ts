@@ -9,6 +9,9 @@ import type { ObserveAttemptDetails, ObserveDetails, ObserveFrame, ObserveState 
 function resultText(rejected?: ObserveAttemptDetails["rejected"]): string {
 	if (rejected === "arm-disabled") return "Observation is disabled for the current experiment arm.";
 	if (rejected === "duplicate-in-turn") return "Observation already recorded for this agent turn. Continue the task.";
+	if (rejected === "action-required") {
+		return "Observation is waiting for a bounded task action. Use a task tool before observing again.";
+	}
 	return "Observation recorded. Treat it as provisional and user-revisable. Continue the task with one bounded action influenced by it.";
 }
 
@@ -45,11 +48,16 @@ export function registerObserveTool(pi: ExtensionAPI, state: ObserveState): void
 				const details: ObserveAttemptDetails = { ...baseDetails, rejected: "duplicate-in-turn" };
 				return { content: [{ type: "text" as const, text: resultText(details.rejected) }], details, isError: true };
 			}
+			if (state.observationActionPending && !state.userInvitationPending) {
+				const details: ObserveAttemptDetails = { ...baseDetails, rejected: "action-required" };
+				return { content: [{ type: "text" as const, text: resultText(details.rejected) }], details, isError: true };
+			}
 
 			const content = params.content.trim();
 			if (!content) throw new Error("Observation content must not be empty.");
 
 			state.observationUsed = true;
+			state.observationActionPending = true;
 			const frame: ObserveFrame = {
 				schemaVersion: 2,
 				frameId: uuidv7(),

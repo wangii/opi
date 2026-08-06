@@ -4,7 +4,6 @@ import { convertToLlm, serializeConversation } from "@earendil-works/pi-coding-a
 import { isFrameMemoryArm } from "./config.ts";
 import { isDefaultObserveFrame } from "./default-frame.ts";
 import { estimateFrameTokens } from "./frame-state.ts";
-import { completeModel } from "./model-completion-adapter.ts";
 import { buildSemanticIndexPrompt, parseSemanticIndexResponse } from "./semantic-index-response.ts";
 import { reconstructSemanticIndexState, SEMANTIC_INDEX_ENTRY_TYPE } from "./semantic-state.ts";
 import { createSourceReference } from "./source-reference.ts";
@@ -59,8 +58,7 @@ async function generateSemanticIndexBatch(
 	const frame = state.activeFrame;
 	const model = ctx.model;
 	if (!frame || !model || candidates.length === 0) return undefined;
-	const response = await completeModel(
-		ctx.modelRegistry,
+	const response = await ctx.modelRegistry.complete(
 		model,
 		{
 			systemPrompt: "You create concise, source-grounded semantic memory under a provisional frame.",

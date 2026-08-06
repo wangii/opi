@@ -1,10 +1,9 @@
 import { uuidv7 } from "@earendil-works/pi-ai";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { appendActiveFrameToSystemPrompt } from "./active-frame-prompt.ts";
 import { registerSemanticCompactHook } from "./compact-hook.ts";
 import { isFrameMemoryArm, OBSERVE_TOOL_NAME, parseObserveArm, registerObserveArmFlag } from "./config.ts";
 import { registerContextProjection } from "./context-projection.ts";
-import { DEFAULT_FRAME_CONTEXT_MESSAGE_TYPE, DEFAULT_FRAME_ENTRY_TYPE, deriveDefaultFrame } from "./default-frame.ts";
+import { DEFAULT_FRAME_ENTRY_TYPE, deriveDefaultFrame } from "./default-frame.ts";
 import { activateObserveFrame, estimateFrameTokens, reconstructObserveFrameState } from "./frame-state.ts";
 import { registerObserveCommand } from "./observe-command.ts";
 import { registerObserveTool } from "./observe-tool.ts";
@@ -33,6 +32,7 @@ export default function observeMvpExtension(pi: ExtensionAPI): void {
 		currentRunId: undefined,
 		currentTurnIndex: 0,
 		observationUsed: false,
+		observationActionPending: false,
 		userInvitationPending: false,
 		defaultFrameAttempted: false,
 		activeFrame: undefined,
@@ -54,7 +54,7 @@ export default function observeMvpExtension(pi: ExtensionAPI): void {
 
 	pi.on("before_agent_start", (event, ctx) => {
 		syncArm(pi, state);
-		if (!isFrameMemoryArm(state.arm)) return { systemPrompt: event.systemPrompt };
+		if (!isFrameMemoryArm(state.arm)) return undefined;
 
 		if (!state.activeFrame && !state.defaultFrameAttempted) {
 			state.defaultFrameAttempted = true;
@@ -80,23 +80,13 @@ export default function observeMvpExtension(pi: ExtensionAPI): void {
 				const activated = activateObserveFrame(state, frame);
 				state.activeFrame = activated.activeFrame;
 				state.frames = activated.frames;
-				return {
-					message: {
-						customType: DEFAULT_FRAME_CONTEXT_MESSAGE_TYPE,
-						content: `Initial Observe frame derived from the active AGENTS.md hierarchy:\n${frame.content}`,
-						display: false,
-						details: { frameId: frame.frameId },
-					},
-					systemPrompt: appendActiveFrameToSystemPrompt(event.systemPrompt, frame),
-				};
+				// The context hook presents the frame once at the stable beginning of
+				// each provider request. Do not also append it after the user's prompt.
+				return undefined;
 			}
 		}
 
-		return {
-			systemPrompt: state.activeFrame
-				? appendActiveFrameToSystemPrompt(event.systemPrompt, state.activeFrame)
-				: event.systemPrompt,
-		};
+		return undefined;
 	});
 
 	pi.on("agent_start", (_event, ctx) => {
@@ -110,10 +100,15 @@ export default function observeMvpExtension(pi: ExtensionAPI): void {
 		state.observationUsed = false;
 	});
 
+	pi.on("tool_call", (event) => {
+		if (event.toolName !== OBSERVE_TOOL_NAME) state.observationActionPending = false;
+	});
+
 	pi.on("agent_end", () => {
 		state.currentRunId = undefined;
 		state.currentTurnIndex = 0;
 		state.observationUsed = false;
+		state.observationActionPending = false;
 		state.userInvitationPending = false;
 	});
 

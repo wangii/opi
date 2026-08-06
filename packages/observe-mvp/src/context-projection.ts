@@ -1,7 +1,8 @@
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { ACTIVE_FRAME_CONTEXT_MESSAGE_TYPE, prependActiveFrameToContext } from "./active-frame-prompt.ts";
 import { isFrameMemoryArm } from "./config.ts";
-import { isDefaultObserveFrame } from "./default-frame.ts";
+import { DEFAULT_FRAME_CONTEXT_MESSAGE_TYPE, isDefaultObserveFrame } from "./default-frame.ts";
 import { estimateFrameTokens } from "./frame-state.ts";
 import { estimateRawMessageTokens, messageReferenceKey, sourceReferenceKey } from "./source-reference.ts";
 import type { ObserveFrame, ObserveState, SemanticRecord, SourceReference } from "./types.ts";
@@ -131,8 +132,20 @@ function projectRun(
 	const covered = units.flatMap((unit) => unit.covered);
 	const sources = new Map<string, SourceReference>();
 	for (const item of covered) sources.set(item.source.sourceId, item.source);
+	// A semantic model may not discard user intent or operational outcomes. If it
+	// does, fail closed and keep this whole safe message group raw.
+	if (
+		covered.some(
+			({ record, source }) =>
+				(source.role === "user" && record.disposition !== "retain") ||
+				(source.role === "toolResult" && record.disposition === "drop"),
+		)
+	) {
+		return undefined;
+	}
 	const rawTokens = units.reduce((total, unit) => total + unit.rawTokens, 0);
 	const text = semanticMemoryText(activeFrame, covered);
+	if (!text.includes("Post-frame records:\n- ")) return undefined;
 	const projectedTokens = estimateFrameTokens(text);
 	if (projectedTokens >= rawTokens) return undefined;
 	return {
@@ -158,6 +171,13 @@ export function projectFrameContext(
 	activeFrame: ObserveFrame,
 	records: SemanticRecord[],
 ): ContextProjectionResult {
+	const contextMessages = messages.filter(
+		(message) =>
+			message.role !== "custom" ||
+			(message.customType !== ACTIVE_FRAME_CONTEXT_MESSAGE_TYPE &&
+				message.customType !== DEFAULT_FRAME_CONTEXT_MESSAGE_TYPE),
+	);
+	const inputMessages = contextMessages.length === messages.length ? messages : contextMessages;
 	const recordBySourceKey = new Map<string, CoveredMessage>();
 	for (const record of records) {
 		if (record.frameId !== activeFrame.frameId) continue;
@@ -185,7 +205,10 @@ export function projectFrameContext(
 		pending = [];
 	};
 
-	for (const unit of contextUnits(messages)) {
+	const units = contextUnits(inputMessages);
+	const latestUser = [...inputMessages].reverse().find((message) => message.role === "user");
+	const latestUnit = units[units.length - 1];
+	for (const unit of units) {
 		const covered = unit.messages.map((message) => {
 			const key = messageReferenceKey(message);
 			return key === undefined ? undefined : recordBySourceKey.get(key);
@@ -194,6 +217,18 @@ export function projectFrameContext(
 		const preFrame =
 			!isDefaultObserveFrame(activeFrame) &&
 			(activeFrameUnit || unit.messages.every((message) => message.timestamp < activeFrame.createdAt));
+		const protectsLatestUser = latestUser !== undefined && unit.messages.includes(latestUser);
+		const protectsLatestToolBatch =
+			unit === latestUnit &&
+			unit.toolBatchComplete &&
+			unit.messages.some(
+				(message) => message.role === "assistant" && message.content.some((part) => part.type === "toolCall"),
+			);
+		if (protectsLatestUser || protectsLatestToolBatch) {
+			flush();
+			projected.push(...unit.messages);
+			continue;
+		}
 		if (unit.toolBatchComplete && (preFrame || covered.every((item): item is CoveredMessage => item !== undefined))) {
 			pending.push({
 				...unit,
@@ -207,12 +242,12 @@ export function projectFrameContext(
 		projected.push(...unit.messages);
 	}
 	flush();
-	const framedMessages = replacedSourceIds.length === 0 && droppedPreFrameMessages === 0 ? messages : projected;
+	const framedMessages = replacedSourceIds.length === 0 && droppedPreFrameMessages === 0 ? inputMessages : projected;
 	return {
 		messages: framedMessages,
 		projectedTokens,
 		rawTokens,
-		rawContextTokens: estimateContextTokens(messages),
+		rawContextTokens: estimateContextTokens(inputMessages),
 		framedContextTokens: estimateContextTokens(framedMessages),
 		replacedSourceIds,
 		droppedPreFrameMessages,
@@ -240,7 +275,6 @@ export function registerContextProjection(pi: ExtensionAPI, state: ObserveState)
 			);
 			ctx.ui.setStatus(OBSERVE_CONTEXT_STATUS_ID, `${indicator} ${counts}`);
 		}
-		if (projection.messages === event.messages) return undefined;
-		return { messages: projection.messages };
+		return { messages: prependActiveFrameToContext(projection.messages, state.activeFrame) };
 	});
 }

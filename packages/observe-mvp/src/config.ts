@@ -22,6 +22,6 @@ export function registerObserveArmFlag(pi: ExtensionAPI): void {
 	pi.registerFlag(OBSERVE_ARM_FLAG, {
 		description: "Observe MVP experiment arm",
 		type: "string",
-		default: "interaction",
+		default: "frame-forward",
 	});
 }

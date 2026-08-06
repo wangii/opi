@@ -9,7 +9,6 @@ import type {
 import { convertToLlm } from "@earendil-works/pi-coding-agent";
 import { buildSemanticCompactPrompt } from "./compact-prompt.ts";
 import type { ObserveArm } from "./config.ts";
-import { completeModel } from "./model-completion-adapter.ts";
 import type { SemanticCompactDetails } from "./types.ts";
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -71,8 +70,7 @@ async function generateContinuationMemory(
 	const model = ctx.model;
 	if (!model) return undefined;
 
-	const response = await completeModel(
-		ctx.modelRegistry,
+	const response = await ctx.modelRegistry.complete(
 		model,
 		{
 			systemPrompt: "You write concise, faithful continuation memory for an ongoing coding task.",
