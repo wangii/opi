@@ -1,6 +1,6 @@
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
-import type { SessionEntry } from "@earendil-works/pi-coding-agent";
-import { describe, expect, it } from "vitest";
+import type { ExtensionAPI, ExtensionContext, SessionEntry } from "@earendil-works/pi-coding-agent";
+import { describe, expect, it, vi } from "vitest";
 import { formatActiveFrameContext, prependActiveFrameToContext } from "../src/active-frame-prompt.ts";
 import { buildSemanticCompactPrompt } from "../src/compact-prompt.ts";
 import { OBSERVE_ARMS, parseObserveArm } from "../src/config.ts";
@@ -9,11 +9,13 @@ import { DEFAULT_FRAME_ENTRY_TYPE, deriveDefaultFrame } from "../src/default-fra
 import { calculateFrameCost, hasFrameCompressionFailed } from "../src/frame-cost.ts";
 import { reconstructObserveFrameState } from "../src/frame-state.ts";
 import { OBSERVE_PROMPT_GUIDELINES, OBSERVE_TOOL_DESCRIPTION } from "../src/observe-prompt.ts";
+import { resetObserveSessionState } from "../src/observe-state.ts";
+import { formatSemanticIndexStatus, registerSemanticIndexing } from "../src/semantic-index.ts";
 import { buildSemanticIndexPrompt, parseSemanticIndexResponse } from "../src/semantic-index-response.ts";
 import { reconstructSemanticIndexState, SEMANTIC_INDEX_ENTRY_TYPE } from "../src/semantic-state.ts";
 import { extractObserveRecords } from "../src/session-extractor.ts";
 import { createSourceReference } from "../src/source-reference.ts";
-import type { ObserveFrame, SemanticIndexBatch, SemanticRecord, SourceReference } from "../src/types.ts";
+import type { ObserveFrame, ObserveState, SemanticIndexBatch, SemanticRecord, SourceReference } from "../src/types.ts";
 
 function semanticRecord(id: string, frameId: string, rawTokens: number, semanticTokens: number): SemanticRecord {
 	return {
@@ -150,6 +152,47 @@ describe("observe frame state", () => {
 		expect(reconstructObserveFrameState([entry])).toEqual({ activeFrame: frame, frames: [frame] });
 	});
 
+	it("resets session-scoped frame and semantic state for a new session", () => {
+		const frame: ObserveFrame = {
+			schemaVersion: 2,
+			frameId: "frame-old",
+			observationEventId: "event-old",
+			content: "The old session frame.",
+			createdAt: 100,
+			frameTokens: 6,
+			status: "active",
+		};
+		const state: ObserveState = {
+			arm: "frame-forward",
+			currentRunId: "run-old",
+			currentTurnIndex: 3,
+			observationUsed: true,
+			observationActionPending: true,
+			userInvitationPending: true,
+			defaultFrameAttempted: true,
+			activeFrame: frame,
+			frames: [frame],
+			semanticRecords: [semanticRecord("old", frame.frameId, 20, 5)],
+			semanticIndexBatches: [],
+		};
+
+		resetObserveSessionState(state);
+
+		expect(state).toEqual({
+			arm: "frame-forward",
+			currentRunId: undefined,
+			currentTurnIndex: 0,
+			observationUsed: false,
+			observationActionPending: false,
+			userInvitationPending: false,
+			defaultFrameAttempted: false,
+			activeFrame: undefined,
+			frames: [],
+			semanticRecords: [],
+			semanticIndexBatches: [],
+		});
+	});
+
 	it("reconstructs the latest frame from the active branch and supersedes its parent", () => {
 		const first: ObserveFrame = {
 			schemaVersion: 2,
@@ -256,6 +299,105 @@ describe("semantic indexing", () => {
 		expect(first).toMatchObject({ sourceId: "entry:user-1", entryId: "user-1", role: "user", timestamp: 300 });
 		expect(first?.contentHash).toHaveLength(64);
 		expect(first?.rawTokens).toBeGreaterThan(0);
+	});
+
+	it("shows semantic indexing in the TUI footer until generation finishes", async () => {
+		const frame: ObserveFrame = {
+			schemaVersion: 2,
+			frameId: "frame-indexing",
+			observationEventId: "event-indexing",
+			content: "Track the active task.",
+			createdAt: 100,
+			frameTokens: 6,
+			status: "active",
+		};
+		const state: ObserveState = {
+			arm: "frame-forward",
+			currentRunId: "run-indexing",
+			currentTurnIndex: 0,
+			observationUsed: false,
+			observationActionPending: false,
+			userInvitationPending: false,
+			defaultFrameAttempted: true,
+			activeFrame: frame,
+			frames: [frame],
+			semanticRecords: [],
+			semanticIndexBatches: [],
+		};
+		const handlers = new Map<string, (...args: unknown[]) => unknown>();
+		const appendEntry = vi.fn();
+		const pi = {
+			on: (event: string, handler: (...args: unknown[]) => unknown) => handlers.set(event, handler),
+			appendEntry,
+		} as unknown as ExtensionAPI;
+		let resolveComplete: ((response: unknown) => void) | undefined;
+		const complete = vi.fn(
+			() =>
+				new Promise((resolve) => {
+					resolveComplete = resolve;
+				}),
+		);
+		const setStatus = vi.fn();
+		const ctx = {
+			mode: "tui",
+			hasUI: true,
+			model: { id: "model" },
+			modelRegistry: { complete },
+			thinkingLevel: "off",
+			sessionManager: {
+				getBranch: () => [
+					{
+						type: "message",
+						id: "user-indexing",
+						parentId: null,
+						timestamp: new Date(200).toISOString(),
+						message: {
+							role: "user",
+							content: [{ type: "text", text: "Index this message." }],
+							timestamp: 200,
+						},
+					},
+				],
+			},
+			ui: {
+				setStatus,
+				notify: vi.fn(),
+				theme: { fg: (_color: string, text: string) => text },
+			},
+		} as unknown as ExtensionContext;
+		registerSemanticIndexing(pi, state);
+		const turnStart = handlers.get("turn_start");
+		if (!turnStart) throw new Error("turn_start handler was not registered");
+
+		const indexing = Promise.resolve(turnStart({}, ctx));
+		expect(setStatus).toHaveBeenCalledWith("observe-semantic-index", "观 indexing 1 message…");
+		if (!resolveComplete) throw new Error("Semantic indexing request was not started");
+		resolveComplete({
+			stopReason: "stop",
+			content: [
+				{
+					type: "text",
+					text: '{"records":[{"sourceId":"entry:user-indexing","disposition":"retain","interpretation":"Continue indexing."}]}',
+				},
+			],
+			usage: {
+				input: 10,
+				output: 5,
+				cacheRead: 0,
+				cacheWrite: 0,
+				totalTokens: 15,
+				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+			},
+		});
+		await indexing;
+
+		expect(setStatus).toHaveBeenLastCalledWith("observe-semantic-index", undefined);
+		expect(appendEntry).toHaveBeenCalledOnce();
+	});
+
+	it("formats semantic indexing status counts", () => {
+		expect(formatSemanticIndexStatus(1)).toBe("indexing 1 message…");
+		expect(formatSemanticIndexStatus(3)).toBe("indexing 3 messages…");
 	});
 
 	it("accepts exactly one concise interpretation for every requested source", () => {

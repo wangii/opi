@@ -6,6 +6,7 @@ import { registerContextProjection } from "./context-projection.ts";
 import { DEFAULT_FRAME_ENTRY_TYPE, deriveDefaultFrame } from "./default-frame.ts";
 import { activateObserveFrame, estimateFrameTokens, reconstructObserveFrameState } from "./frame-state.ts";
 import { registerObserveCommand } from "./observe-command.ts";
+import { resetObserveSessionState } from "./observe-state.ts";
 import { registerObserveTool } from "./observe-tool.ts";
 import { registerSemanticIndexing } from "./semantic-index.ts";
 import type { DefaultObserveFrameDetails, ObserveFrame, ObserveState } from "./types.ts";
@@ -44,8 +45,9 @@ export default function observeMvpExtension(pi: ExtensionAPI): void {
 	registerObserveTool(pi, state);
 	registerObserveCommand(pi, state);
 
-	pi.on("session_start", (_event, ctx) => {
+	pi.on("session_start", (event, ctx) => {
 		syncArm(pi, state);
+		if (event.reason === "new") resetObserveSessionState(state);
 		const frameState = reconstructObserveFrameState(ctx.sessionManager.getBranch());
 		state.activeFrame = frameState.activeFrame;
 		state.frames = frameState.frames;

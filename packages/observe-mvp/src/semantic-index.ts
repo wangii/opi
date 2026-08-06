@@ -9,6 +9,12 @@ import { reconstructSemanticIndexState, SEMANTIC_INDEX_ENTRY_TYPE } from "./sema
 import { createSourceReference } from "./source-reference.ts";
 import type { ObserveState, SemanticIndexBatch, SemanticRecord, SourceReference } from "./types.ts";
 
+const SEMANTIC_INDEX_STATUS_ID = "observe-semantic-index";
+
+export function formatSemanticIndexStatus(sourceCount: number): string {
+	return `indexing ${sourceCount} ${sourceCount === 1 ? "message" : "messages"}…`;
+}
+
 interface IndexCandidate {
 	entry: Extract<SessionEntry, { type: "message" }>;
 	source: SourceReference;
@@ -122,6 +128,12 @@ async function indexPersistedMessages(pi: ExtensionAPI, state: ObserveState, ctx
 	if (!isFrameMemoryArm(state.arm) || !state.activeFrame) return;
 	const candidates = indexCandidates(state, ctx.sessionManager.getBranch());
 	if (candidates.length === 0) return;
+	if (ctx.mode === "tui") {
+		ctx.ui.setStatus(
+			SEMANTIC_INDEX_STATUS_ID,
+			`${ctx.ui.theme.fg("accent", "观")} ${ctx.ui.theme.fg("dim", formatSemanticIndexStatus(candidates.length))}`,
+		);
+	}
 	let batch: SemanticIndexBatch | undefined;
 	try {
 		batch = await generateSemanticIndexBatch(ctx, state, candidates);
@@ -131,6 +143,8 @@ async function indexPersistedMessages(pi: ExtensionAPI, state: ObserveState, ctx
 			ctx.ui.notify(`Observe semantic indexing failed; raw context remains active: ${message}`, "warning");
 		}
 		return;
+	} finally {
+		if (ctx.mode === "tui") ctx.ui.setStatus(SEMANTIC_INDEX_STATUS_ID, undefined);
 	}
 	if (!batch) return;
 	pi.appendEntry<SemanticIndexBatch>(SEMANTIC_INDEX_ENTRY_TYPE, batch);
@@ -140,6 +154,7 @@ async function indexPersistedMessages(pi: ExtensionAPI, state: ObserveState, ctx
 
 export function registerSemanticIndexing(pi: ExtensionAPI, state: ObserveState): void {
 	pi.on("session_start", (_event, ctx) => {
+		if (ctx.mode === "tui") ctx.ui.setStatus(SEMANTIC_INDEX_STATUS_ID, undefined);
 		const restored = reconstructSemanticIndexState(ctx.sessionManager.getBranch());
 		state.semanticIndexBatches = restored.semanticIndexBatches;
 		state.semanticRecords = restored.semanticRecords;
@@ -152,5 +167,8 @@ export function registerSemanticIndexing(pi: ExtensionAPI, state: ObserveState):
 	});
 	pi.on("agent_settled", async (_event, ctx) => {
 		await indexPersistedMessages(pi, state, ctx);
+	});
+	pi.on("session_shutdown", (_event, ctx) => {
+		if (ctx.mode === "tui") ctx.ui.setStatus(SEMANTIC_INDEX_STATUS_ID, undefined);
 	});
 }
