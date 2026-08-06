@@ -21,8 +21,14 @@ The available arms are:
 
 For frame-memory arms, the first turn derives a concise default operating frame
 from Pi's currently loaded `AGENTS.md` hierarchy. It uses the already loaded
-context-file metadata and does not make a separate model request. A later
-`observe` call supersedes this provisional default frame.
+context-file metadata and does not make a separate model request. Before each
+agent run, the active frame is appended to the system prompt as explicitly
+provisional, contextual-only, user-revisable context that cannot override any
+existing instruction. A later `observe` call supersedes the provisional default
+frame, and the next agent run receives only the replacement frame. In TUI mode,
+the footer status line shows estimated message-context tokens as
+`观 raw <before> → frame <after> tok`; these counts exclude the system prompt
+and tool schemas.
 
 The experiment's authoritative baseline should run without loading this
 extension at all. Session JSONL remains the source of truth; the exported

@@ -1,5 +1,6 @@
 import { uuidv7 } from "@earendil-works/pi-ai";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { appendActiveFrameToSystemPrompt } from "./active-frame-prompt.ts";
 import { registerSemanticCompactHook } from "./compact-hook.ts";
 import { isFrameMemoryArm, OBSERVE_TOOL_NAME, parseObserveArm, registerObserveArmFlag } from "./config.ts";
 import { registerContextProjection } from "./context-projection.ts";
@@ -53,42 +54,48 @@ export default function observeMvpExtension(pi: ExtensionAPI): void {
 
 	pi.on("before_agent_start", (event, ctx) => {
 		syncArm(pi, state);
-		if (!isFrameMemoryArm(state.arm) || state.activeFrame || state.defaultFrameAttempted) {
-			return { systemPrompt: ctx.getSystemPrompt() };
+		if (!isFrameMemoryArm(state.arm)) return { systemPrompt: event.systemPrompt };
+
+		if (!state.activeFrame && !state.defaultFrameAttempted) {
+			state.defaultFrameAttempted = true;
+			const derived = deriveDefaultFrame(event.systemPromptOptions.contextFiles, ctx.cwd);
+			if (derived) {
+				const timestamp = Date.now();
+				const frame: ObserveFrame = {
+					schemaVersion: 2,
+					frameId: uuidv7(),
+					observationEventId: `default:${uuidv7()}`,
+					content: derived.content,
+					createdAt: timestamp,
+					activationSourceRef: derived.activationSourceRef,
+					frameTokens: estimateFrameTokens(derived.content),
+					status: "active",
+				};
+				const details: DefaultObserveFrameDetails = {
+					schemaVersion: 1,
+					frame,
+					sources: derived.sources,
+				};
+				pi.appendEntry<DefaultObserveFrameDetails>(DEFAULT_FRAME_ENTRY_TYPE, details);
+				const activated = activateObserveFrame(state, frame);
+				state.activeFrame = activated.activeFrame;
+				state.frames = activated.frames;
+				return {
+					message: {
+						customType: DEFAULT_FRAME_CONTEXT_MESSAGE_TYPE,
+						content: `Initial Observe frame derived from the active AGENTS.md hierarchy:\n${frame.content}`,
+						display: false,
+						details: { frameId: frame.frameId },
+					},
+					systemPrompt: appendActiveFrameToSystemPrompt(event.systemPrompt, frame),
+				};
+			}
 		}
 
-		state.defaultFrameAttempted = true;
-		const derived = deriveDefaultFrame(event.systemPromptOptions.contextFiles, ctx.cwd);
-		if (!derived) return { systemPrompt: ctx.getSystemPrompt() };
-
-		const timestamp = Date.now();
-		const frame: ObserveFrame = {
-			schemaVersion: 2,
-			frameId: uuidv7(),
-			observationEventId: `default:${uuidv7()}`,
-			content: derived.content,
-			createdAt: timestamp,
-			activationSourceRef: derived.activationSourceRef,
-			frameTokens: estimateFrameTokens(derived.content),
-			status: "active",
-		};
-		const details: DefaultObserveFrameDetails = {
-			schemaVersion: 1,
-			frame,
-			sources: derived.sources,
-		};
-		pi.appendEntry<DefaultObserveFrameDetails>(DEFAULT_FRAME_ENTRY_TYPE, details);
-		const activated = activateObserveFrame(state, frame);
-		state.activeFrame = activated.activeFrame;
-		state.frames = activated.frames;
 		return {
-			message: {
-				customType: DEFAULT_FRAME_CONTEXT_MESSAGE_TYPE,
-				content: `Initial Observe frame derived from the active AGENTS.md hierarchy:\n${frame.content}`,
-				display: false,
-				details: { frameId: frame.frameId },
-			},
-			systemPrompt: ctx.getSystemPrompt(),
+			systemPrompt: state.activeFrame
+				? appendActiveFrameToSystemPrompt(event.systemPrompt, state.activeFrame)
+				: event.systemPrompt,
 		};
 	});
 
@@ -115,6 +122,7 @@ export default function observeMvpExtension(pi: ExtensionAPI): void {
 	registerSemanticCompactHook(pi, () => state.arm);
 }
 
+export * from "./active-frame-prompt.ts";
 export * from "./config.ts";
 export * from "./default-frame.ts";
 export * from "./session-extractor.ts";

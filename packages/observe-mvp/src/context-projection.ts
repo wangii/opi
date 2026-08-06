@@ -1,5 +1,5 @@
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { isFrameMemoryArm } from "./config.ts";
 import { isDefaultObserveFrame } from "./default-frame.ts";
 import { estimateFrameTokens } from "./frame-state.ts";
@@ -26,8 +26,26 @@ export interface ContextProjectionResult {
 	messages: AgentMessage[];
 	projectedTokens: number;
 	rawTokens: number;
+	rawContextTokens: number;
+	framedContextTokens: number;
 	replacedSourceIds: string[];
 	droppedPreFrameMessages: number;
+}
+
+const OBSERVE_CONTEXT_STATUS_ID = "observe-context";
+
+function estimateContextTokens(messages: AgentMessage[]): number {
+	return messages.reduce((total, message) => total + estimateRawMessageTokens(message), 0);
+}
+
+export function formatContextTokens(tokens: number): string {
+	if (tokens < 1000) return String(tokens);
+	if (tokens < 10_000) return `${(tokens / 1000).toFixed(1)}k`;
+	return `${Math.round(tokens / 1000)}k`;
+}
+
+export function formatObserveContextStatus(rawContextTokens: number, framedContextTokens: number): string {
+	return `raw ${formatContextTokens(rawContextTokens)} → frame ${formatContextTokens(framedContextTokens)} tok`;
 }
 
 function contextUnits(messages: AgentMessage[]): ContextUnit[] {
@@ -189,19 +207,39 @@ export function projectFrameContext(
 		projected.push(...unit.messages);
 	}
 	flush();
+	const framedMessages = replacedSourceIds.length === 0 && droppedPreFrameMessages === 0 ? messages : projected;
 	return {
-		messages: replacedSourceIds.length === 0 && droppedPreFrameMessages === 0 ? messages : projected,
+		messages: framedMessages,
 		projectedTokens,
 		rawTokens,
+		rawContextTokens: estimateContextTokens(messages),
+		framedContextTokens: estimateContextTokens(framedMessages),
 		replacedSourceIds,
 		droppedPreFrameMessages,
 	};
 }
 
 export function registerContextProjection(pi: ExtensionAPI, state: ObserveState): void {
-	pi.on("context", (event) => {
-		if (!isFrameMemoryArm(state.arm) || !state.activeFrame) return undefined;
+	const clearStatus = (ctx: ExtensionContext): void => {
+		if (ctx.mode === "tui") ctx.ui.setStatus(OBSERVE_CONTEXT_STATUS_ID, undefined);
+	};
+
+	pi.on("session_start", (_event, ctx) => clearStatus(ctx));
+	pi.on("session_shutdown", (_event, ctx) => clearStatus(ctx));
+	pi.on("context", (event, ctx) => {
+		if (!isFrameMemoryArm(state.arm) || !state.activeFrame) {
+			clearStatus(ctx);
+			return undefined;
+		}
 		const projection = projectFrameContext(event.messages, state.activeFrame, state.semanticRecords);
+		if (ctx.mode === "tui") {
+			const indicator = ctx.ui.theme.fg("accent", "观");
+			const counts = ctx.ui.theme.fg(
+				projection.framedContextTokens < projection.rawContextTokens ? "success" : "dim",
+				formatObserveContextStatus(projection.rawContextTokens, projection.framedContextTokens),
+			);
+			ctx.ui.setStatus(OBSERVE_CONTEXT_STATUS_ID, `${indicator} ${counts}`);
+		}
 		if (projection.messages === event.messages) return undefined;
 		return { messages: projection.messages };
 	});

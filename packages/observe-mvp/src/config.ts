@@ -7,7 +7,7 @@ export const OBSERVE_ARMS = ["off", "interaction", "interaction+compact", "frame
 export type ObserveArm = (typeof OBSERVE_ARMS)[number];
 
 export function parseObserveArm(value: boolean | string | undefined): ObserveArm {
-	if (value === undefined) return "interaction";
+	if (value === undefined) return "frame-forward";
 	if (typeof value !== "string" || !OBSERVE_ARMS.includes(value as ObserveArm)) {
 		throw new Error(`--${OBSERVE_ARM_FLAG} must be one of: ${OBSERVE_ARMS.join(", ")}`);
 	}
