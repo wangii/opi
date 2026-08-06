@@ -48,6 +48,8 @@ export interface SourceReference {
 	toolName?: string;
 	/** Original bash command for bash results, resolved from the paired tool call. */
 	command?: string;
+	/** Content-only hash for read results, stable across repeated identical reads. */
+	readContentHash?: string;
 	timestamp: number;
 	contentHash: string;
 	rawTokens: number;
@@ -86,6 +88,8 @@ export interface ObserveState {
 	frames: ObserveFrame[];
 	semanticRecords: SemanticRecord[];
 	semanticIndexBatches: SemanticIndexBatch[];
+	/** Consecutive provider requests where the active frame did not reduce context size. */
+	projectionNoCompressionStreak: number;
 }
 
 export interface SemanticCompactDetails {

@@ -11,4 +11,5 @@ export function resetObserveSessionState(state: ObserveState): void {
 	state.frames = [];
 	state.semanticRecords = [];
 	state.semanticIndexBatches = [];
+	state.projectionNoCompressionStreak = 0;
 }

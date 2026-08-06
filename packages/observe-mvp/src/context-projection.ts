@@ -36,6 +36,12 @@ export interface ContextProjectionResult {
 
 const OBSERVE_CONTEXT_STATUS_ID = "observe-context";
 
+export const OBSERVE_PROJECTION_METRICS_MESSAGE_TYPE = "observe.projection-metrics";
+export const OBSERVE_ADAPTIVE_HINT_MESSAGE_TYPE = "observe.adaptive-hint";
+
+/** Consecutive no-compression requests before the adaptive arm invites a reframe. */
+export const FRAME_ADAPTIVE_NO_COMPRESSION_STREAK = 3;
+
 function estimateContextTokens(messages: AgentMessage[]): number {
 	return messages.reduce((total, message) => total + estimateRawMessageTokens(message), 0);
 }
@@ -48,6 +54,41 @@ export function formatContextTokens(tokens: number): string {
 
 export function formatObserveContextStatus(rawContextTokens: number, framedContextTokens: number): string {
 	return `raw ${formatContextTokens(rawContextTokens)} → frame ${formatContextTokens(framedContextTokens)} tok`;
+}
+
+/**
+ * One-line diagnostic of the current projection, injected next to the frame so
+ * the model can perceive when the frame is or is not paying for itself.
+ */
+export function buildProjectionMetricsMessage(
+	frame: ObserveFrame,
+	activeFrameRecordCount: number,
+	projection: ContextProjectionResult,
+): AgentMessage {
+	return {
+		role: "custom",
+		customType: OBSERVE_PROJECTION_METRICS_MESSAGE_TYPE,
+		content: `<observe_projection>
+Frame ${frame.frameId.slice(0, 8)}: ${activeFrameRecordCount} post-frame records; this request replaced ${projection.replacedSourceIds.length} sources and dropped ${projection.droppedPreFrameMessages} pre-frame messages; raw ${formatContextTokens(projection.rawContextTokens)} tok → frame ${formatContextTokens(projection.framedContextTokens)} tok.
+</observe_projection>`,
+		display: false,
+		details: { frameId: frame.frameId },
+		timestamp: frame.createdAt,
+	};
+}
+
+/** Adaptive-arm hint injected once the frame stops reducing context for several requests. */
+export function buildAdaptiveHintMessage(streak: number, projection: ContextProjectionResult): AgentMessage {
+	return {
+		role: "custom",
+		customType: OBSERVE_ADAPTIVE_HINT_MESSAGE_TYPE,
+		content: `<observe_adaptive_hint>
+The active Observe frame has not reduced context size for ${streak} consecutive provider requests (raw ${formatContextTokens(projection.rawContextTokens)} tok → frame ${formatContextTokens(projection.framedContextTokens)} tok, replaced ${projection.replacedSourceIds.length} sources). If the current framing no longer fits the task or compresses its evidence, call the observe tool to record a revised provisional frame. Do not call observe if the frame still guides the next actions.
+</observe_adaptive_hint>`,
+		display: false,
+		details: {},
+		timestamp: Date.now(),
+	};
 }
 
 function contextUnits(messages: AgentMessage[]): ContextUnit[] {
@@ -278,6 +319,21 @@ export function registerContextProjection(pi: ExtensionAPI, state: ObserveState)
 			);
 			ctx.ui.setStatus(OBSERVE_CONTEXT_STATUS_ID, `${indicator} ${counts}`);
 		}
-		return { messages: prependActiveFrameToContext(projection.messages, state.activeFrame) };
+		const frame = state.activeFrame;
+		const activeFrameRecordCount = state.semanticRecords.filter((record) => record.frameId === frame.frameId).length;
+		const metricsMessage = buildProjectionMetricsMessage(frame, activeFrameRecordCount, projection);
+		const framed = prependActiveFrameToContext(projection.messages, frame);
+		framed.splice(1, 0, metricsMessage);
+		if (state.arm === "frame-adaptive") {
+			if (projection.framedContextTokens < projection.rawContextTokens) {
+				state.projectionNoCompressionStreak = 0;
+			} else {
+				state.projectionNoCompressionStreak += 1;
+			}
+			if (state.projectionNoCompressionStreak >= FRAME_ADAPTIVE_NO_COMPRESSION_STREAK) {
+				framed.push(buildAdaptiveHintMessage(state.projectionNoCompressionStreak, projection));
+			}
+		}
+		return { messages: framed };
 	});
 }

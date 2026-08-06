@@ -77,6 +77,8 @@ export function registerObserveTool(pi: ExtensionAPI, state: ObserveState): void
 			const activated = activateObserveFrame(state, frame);
 			state.activeFrame = activated.activeFrame;
 			state.frames = activated.frames;
+			// A new frame opens a fresh adaptive window: restart the no-compression streak.
+			state.projectionNoCompressionStreak = 0;
 			state.userInvitationPending = false;
 			return {
 				content: [{ type: "text" as const, text: resultText() }],

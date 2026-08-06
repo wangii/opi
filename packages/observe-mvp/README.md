@@ -54,7 +54,7 @@ The available arms are:
 - `interaction` — the Observe tool is enabled with native compaction;
 - `interaction+compact` — the Observe tool and semantic continuation-memory compaction are enabled;
 - `frame-forward` — frame-conditioned semantic memory is enabled for future messages;
-- `frame-adaptive` — frame-conditioned semantic memory and adaptive reframing are enabled.
+- `frame-adaptive` — frame-conditioned semantic memory and adaptive reframing are enabled (an explicit hint invites a reframe when the frame stops compressing context across consecutive requests);
 
 For frame-memory arms, the first turn derives a concise default operating frame
 from Pi's currently loaded `AGENTS.md` hierarchy. It uses the already loaded
@@ -63,7 +63,14 @@ provider request, the active frame is injected once as an ephemeral, explicitly
 provisional context message before the task history, rather than as the latest
 user message or a system instruction. A later `observe` call supersedes the
 provisional default frame, and the next provider request receives only the
-replacement frame. In TUI mode,
+replacement frame. Each request also receives a one-line projection metrics
+message next to the frame (`post-frame records; replaced sources; dropped
+pre-frame messages; raw → frame token counts`) so the agent can perceive when
+the frame is or is not paying for itself; these counts exclude the system prompt
+and tool schemas. In the `frame-adaptive` arm, when the frame fails to reduce
+context size for several consecutive requests, an explicit hint invites the
+agent to call `observe` and record a revised frame; a successful `observe`
+restarts that adaptive window. In TUI mode,
 the footer status line shows estimated message-context tokens as
 `观 raw <before> → frame <after> tok`; these counts exclude the system prompt
 and tool schemas.
@@ -72,3 +79,19 @@ The experiment's authoritative baseline should run without loading this
 extension at all. Session JSONL remains the source of truth; the exported
 `extractObserveRecords()` helper only normalizes observation tool results for
 offline analysis.
+
+## Semantic indexing details
+
+Indexing serializes each unindexed message with role- and kind-aware caps:
+`read` tool results get a larger head+tail view (`INDEX_READ_CAP` /
+`INDEX_READ_TAIL`) so frame-relevant facts in the middle of a file are visible
+to the indexer, while other tool results and tool calls stay bounded. Read
+interpretations are budgeted proportionally to the source size
+(`readInterpretationBudget`, capped) and validated deterministically against
+that budget.
+
+Reads are re-derivable: a `read` result whose file content was already indexed
+under the active frame is skipped, so a repeated identical read stays raw in
+context instead of being re-indexed (and possibly dropped) again. Bash
+classification treats any output redirection (`>`, `>>`, `2>`) or a pipe into
+`tee` as side-effecting, so file-writing shell forms are never droppable.

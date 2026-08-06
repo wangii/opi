@@ -61,6 +61,7 @@ function parseSourceReference(value: unknown): SourceReference | undefined {
 		(value.role !== "user" && value.role !== "assistant" && value.role !== "toolResult" && value.role !== "custom") ||
 		(value.toolName !== undefined && typeof value.toolName !== "string") ||
 		(value.command !== undefined && typeof value.command !== "string") ||
+		(value.readContentHash !== undefined && typeof value.readContentHash !== "string") ||
 		!isFiniteNumber(value.timestamp) ||
 		typeof value.contentHash !== "string" ||
 		!isFiniteNumber(value.rawTokens)
@@ -73,6 +74,7 @@ function parseSourceReference(value: unknown): SourceReference | undefined {
 		role: value.role,
 		...(value.toolName === undefined ? {} : { toolName: value.toolName }),
 		...(value.command === undefined ? {} : { command: value.command }),
+		...(value.readContentHash === undefined ? {} : { readContentHash: value.readContentHash }),
 		timestamp: value.timestamp,
 		contentHash: value.contentHash,
 		rawTokens: value.rawTokens,

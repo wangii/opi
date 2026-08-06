@@ -12,6 +12,8 @@ import {
 	INDEX_BATCH_MAX_COUNT,
 	INDEX_BATCH_MAX_TOKENS,
 	INDEX_NARRATION_CAP,
+	INDEX_READ_CAP,
+	INDEX_READ_TAIL,
 	INDEX_TAIL,
 	INDEX_TOOL_CALL_CAP,
 	INDEX_TOOL_RESULT_CAP,
@@ -54,7 +56,10 @@ function bashCommandFromCall(part: { type: "toolCall"; name: string; arguments?:
 	return typeof command === "string" ? command : undefined;
 }
 
-function serializationCap(message: Extract<SessionEntry, { type: "message" }>["message"]): {
+function serializationCap(
+	message: Extract<SessionEntry, { type: "message" }>["message"],
+	kind: ToolKind,
+): {
 	maxTokens: number;
 	tailTokens: number;
 } {
@@ -63,6 +68,7 @@ function serializationCap(message: Extract<SessionEntry, { type: "message" }>["m
 			// User intent must be indexed with full fidelity.
 			return { maxTokens: Number.POSITIVE_INFINITY, tailTokens: 0 };
 		case "toolResult":
+			if (kind === "read") return { maxTokens: INDEX_READ_CAP, tailTokens: INDEX_READ_TAIL };
 			return { maxTokens: INDEX_TOOL_RESULT_CAP, tailTokens: INDEX_TAIL };
 		case "assistant":
 			if (message.content.some((part) => part.type === "toolCall")) {
@@ -80,6 +86,19 @@ function indexCandidates(state: ObserveState, entries: SessionEntry[]): IndexCan
 	const indexedSourceIds = new Set(
 		state.semanticRecords.flatMap((record) => record.sourceRefs.map((source) => source.sourceId)),
 	);
+	// Reads are re-derivable: once a given file content was indexed under the
+	// active frame, a repeated identical read is skipped and stays raw in
+	// context instead of being indexed (and possibly dropped) again. This
+	// breaks the read -> drop -> re-read loop and saves nested-request tokens.
+	const indexedReadHashes = new Set<string>();
+	for (const record of state.semanticRecords) {
+		if (record.frameId !== frame.frameId) continue;
+		for (const source of record.sourceRefs) {
+			if (source.role === "toolResult" && source.toolName === "read" && source.readContentHash !== undefined) {
+				indexedReadHashes.add(source.readContentHash);
+			}
+		}
+	}
 	const toolCallById = new Map<string, { toolName: string; command?: string }>();
 	for (const entry of entries) {
 		if (entry.type !== "message" || entry.message.role !== "assistant") continue;
@@ -106,9 +125,17 @@ function indexCandidates(state: ObserveState, entries: SessionEntry[]): IndexCan
 		if (!source || indexedSourceIds.has(source.sourceId)) continue;
 		const kind = classifySourceKind(source);
 		if (source.role === "toolResult" && isMicroSource(kind, source.rawTokens)) continue;
+		if (
+			source.role === "toolResult" &&
+			source.toolName === "read" &&
+			source.readContentHash !== undefined &&
+			indexedReadHashes.has(source.readContentHash)
+		) {
+			continue;
+		}
 		const hasToolCall =
 			entry.message.role === "assistant" && entry.message.content.some((part) => part.type === "toolCall");
-		const { maxTokens, tailTokens } = serializationCap(entry.message);
+		const { maxTokens, tailTokens } = serializationCap(entry.message, kind);
 		const serialized = truncateSerializedForIndexing(
 			serializeConversation(convertToLlm([entry.message])),
 			maxTokens,

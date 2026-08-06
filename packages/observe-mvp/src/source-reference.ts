@@ -54,12 +54,19 @@ export function createSourceReference(
 	if (role !== "user" && role !== "assistant" && role !== "toolResult" && role !== "custom") return undefined;
 	const toolName = role === "toolResult" ? entry.message.toolName : undefined;
 	const command = role === "toolResult" ? toolCalls?.get(entry.message.toolCallId)?.command : undefined;
+	// Content-only hash for read results: stable across repeated reads of the
+	// same file, so re-derivable reads are not re-indexed once indexed.
+	const readContentHash =
+		toolName === "read"
+			? createHash("sha256").update(JSON.stringify(entry.message.content)).digest("hex")
+			: undefined;
 	return {
 		sourceId: `entry:${entry.id}`,
 		entryId: entry.id,
 		role,
 		...(toolName === undefined ? {} : { toolName }),
 		...(command === undefined ? {} : { command }),
+		...(readContentHash === undefined ? {} : { readContentHash }),
 		timestamp: entry.message.timestamp,
 		contentHash: createHash("sha256").update(normalized).digest("hex"),
 		rawTokens: estimateRawMessageTokens(entry.message),

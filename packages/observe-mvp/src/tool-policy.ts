@@ -11,6 +11,16 @@ const EDIT_TOOLS = new Set(["edit", "write"]);
 const BASH_EXPLORE_PATTERN =
 	/^(?:ls|find|grep|rg|cat|head|tail|echo|pwd|which|type|wc|sort|uniq|tree|stat|file|du|df|diff|printf|sed -n)\b/;
 
+/**
+ * Output redirection (`>`, `>>`, `2>`) or a pipe into `tee` writes files even
+ * when the leading command is otherwise read-only, so those must stay
+ * side-effecting. Conservative by design: a false positive only keeps a result
+ * undroppable, while a false negative could drop a real file write.
+ */
+function hasFileWriteRedirect(command: string): boolean {
+	return />/.test(command) || /\btee\b/.test(command);
+}
+
 export function classifyToolKind(toolName: string | undefined, command?: string): ToolKind {
 	if (!toolName) return "other";
 	if (READ_TOOLS.has(toolName)) return "read";
@@ -18,7 +28,7 @@ export function classifyToolKind(toolName: string | undefined, command?: string)
 	if (toolName === "observe") return "observe";
 	if (toolName === "bash") {
 		const trimmed = (command ?? "").trim();
-		if (trimmed && BASH_EXPLORE_PATTERN.test(trimmed)) return "bash-explore";
+		if (trimmed && BASH_EXPLORE_PATTERN.test(trimmed) && !hasFileWriteRedirect(trimmed)) return "bash-explore";
 		return "bash-effect";
 	}
 	return "other";
@@ -28,9 +38,13 @@ export function classifySourceKind(source: SourceReference): ToolKind {
 	return source.role === "toolResult" ? classifyToolKind(source.toolName, source.command) : "other";
 }
 
-/** Token budget for a retained/traced read interpretation: cheap, but enough for key facts. */
+/**
+ * Token budget for a retained/traced read interpretation. Reads carry exact
+ * details the agent may need (identifiers, values, error strings), so the
+ * budget scales with the source size and is capped higher than the old floor.
+ */
 export function readInterpretationBudget(rawTokens: number): number {
-	return Math.min(96, Math.max(16, Math.ceil(rawTokens / 10)));
+	return Math.min(256, Math.max(32, Math.ceil(rawTokens / 8)));
 }
 
 export interface ToolPolicyInput {
@@ -103,3 +117,6 @@ export const INDEX_NARRATION_CAP = 2048;
 export const INDEX_TOOL_CALL_CAP = 1024;
 export const INDEX_TOOL_RESULT_CAP = 1024;
 export const INDEX_TAIL = 256;
+/** Reads get a larger indexing view so frame-relevant facts in the middle of a file survive. */
+export const INDEX_READ_CAP = 3072;
+export const INDEX_READ_TAIL = 512;

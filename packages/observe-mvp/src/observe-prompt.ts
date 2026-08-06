@@ -11,4 +11,5 @@ export const OBSERVE_PROMPT_GUIDELINES = [
 	"Do not use observe for ordinary uncertainty, repetition, summaries, copying source evidence, or avoiding concrete execution.",
 	"Do not call observe again merely because the same frame is still active; first perform one bounded task action.",
 	"After observe, take one bounded action influenced by the new frame, or explain why user input is required.",
+	"Reconsider the frame (call observe) when new evidence contradicts it, the task goal or constraints changed, or the injected projection metrics show the frame is not compressing context.",
 ] as const;

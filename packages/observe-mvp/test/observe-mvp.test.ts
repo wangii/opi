@@ -4,7 +4,17 @@ import { describe, expect, it, vi } from "vitest";
 import { formatActiveFrameContext, prependActiveFrameToContext } from "../src/active-frame-prompt.ts";
 import { buildSemanticCompactPrompt } from "../src/compact-prompt.ts";
 import { OBSERVE_ARMS, parseObserveArm } from "../src/config.ts";
-import { formatObserveContextStatus, projectFrameContext } from "../src/context-projection.ts";
+import {
+	buildAdaptiveHintMessage,
+	buildProjectionMetricsMessage,
+	type ContextProjectionResult,
+	FRAME_ADAPTIVE_NO_COMPRESSION_STREAK,
+	formatObserveContextStatus,
+	OBSERVE_ADAPTIVE_HINT_MESSAGE_TYPE,
+	OBSERVE_PROJECTION_METRICS_MESSAGE_TYPE,
+	projectFrameContext,
+	registerContextProjection,
+} from "../src/context-projection.ts";
 import { DEFAULT_FRAME_ENTRY_TYPE, deriveDefaultFrame } from "../src/default-frame.ts";
 import { calculateFrameCost, hasFrameCompressionFailed } from "../src/frame-cost.ts";
 import { reconstructObserveFrameState } from "../src/frame-state.ts";
@@ -174,6 +184,7 @@ describe("observe frame state", () => {
 			frames: [frame],
 			semanticRecords: [semanticRecord("old", frame.frameId, 20, 5)],
 			semanticIndexBatches: [],
+			projectionNoCompressionStreak: 3,
 		};
 
 		resetObserveSessionState(state);
@@ -190,6 +201,7 @@ describe("observe frame state", () => {
 			frames: [],
 			semanticRecords: [],
 			semanticIndexBatches: [],
+			projectionNoCompressionStreak: 0,
 		});
 	});
 
@@ -323,6 +335,7 @@ describe("semantic indexing", () => {
 			frames: [frame],
 			semanticRecords: [],
 			semanticIndexBatches: [],
+			projectionNoCompressionStreak: 0,
 		};
 		const handlers = new Map<string, (...args: unknown[]) => unknown>();
 		const appendEntry = vi.fn();
@@ -477,6 +490,187 @@ describe("semantic indexing", () => {
 			semanticIndexBatches: [batch],
 			semanticRecords: batch.records,
 		});
+	});
+
+	it("skips indexing a read whose file content was already indexed under the active frame", async () => {
+		const frame: ObserveFrame = {
+			schemaVersion: 2,
+			frameId: "frame-dedup",
+			observationEventId: "event-dedup",
+			content: "Track the file.",
+			createdAt: 100,
+			frameTokens: 6,
+			status: "active",
+		};
+		const fileBody = `export const owner = "team-plat";\nexport function lifecycle() {\n  return "unverified";\n}\n${"// filler\n".repeat(40)}`;
+		const readEntry = (id: string): SessionEntry => ({
+			type: "message",
+			id,
+			parentId: null,
+			timestamp: new Date(200).toISOString(),
+			message: {
+				role: "toolResult",
+				toolCallId: `call-${id}`,
+				toolName: "read",
+				content: [{ type: "text", text: fileBody }],
+				isError: false,
+				timestamp: 200,
+			},
+		});
+		const indexedSource = createSourceReference(readEntry("read-dedup-a"));
+		if (!indexedSource?.readContentHash) throw new Error("Expected a read content hash");
+		const record: SemanticRecord = {
+			schemaVersion: 1,
+			recordId: "record-dedup",
+			frameId: frame.frameId,
+			sourceRefs: [indexedSource],
+			disposition: "drop",
+			semanticTokens: 0,
+			createdAt: 300,
+		};
+		const state: ObserveState = {
+			arm: "frame-forward",
+			currentRunId: "run-dedup",
+			currentTurnIndex: 0,
+			observationUsed: false,
+			observationActionPending: false,
+			userInvitationPending: false,
+			defaultFrameAttempted: true,
+			activeFrame: frame,
+			frames: [frame],
+			semanticRecords: [record],
+			semanticIndexBatches: [],
+			projectionNoCompressionStreak: 0,
+		};
+		const handlers = new Map<string, (...args: unknown[]) => unknown>();
+		const appendEntry = vi.fn();
+		const pi = {
+			on: (event: string, handler: (...args: unknown[]) => unknown) => handlers.set(event, handler),
+			appendEntry,
+		} as unknown as ExtensionAPI;
+		const complete = vi.fn();
+		const ctx = {
+			mode: "tui",
+			hasUI: false,
+			model: { id: "model" },
+			modelRegistry: { complete },
+			thinkingLevel: "off",
+			sessionManager: {
+				getBranch: () => [readEntry("read-dedup-b")],
+			},
+			ui: { setStatus: vi.fn(), theme: { fg: (_color: string, text: string) => text } },
+		} as unknown as ExtensionContext;
+		registerSemanticIndexing(pi, state);
+		const turnStart = handlers.get("turn_start");
+		if (!turnStart) throw new Error("turn_start handler was not registered");
+
+		await turnStart({}, ctx);
+
+		expect(complete).not.toHaveBeenCalled();
+		expect(appendEntry).not.toHaveBeenCalled();
+	});
+
+	it("indexes a read whose content changed since the last indexed read", async () => {
+		const frame: ObserveFrame = {
+			schemaVersion: 2,
+			frameId: "frame-dedup-change",
+			observationEventId: "event-dedup-change",
+			content: "Track the file.",
+			createdAt: 100,
+			frameTokens: 6,
+			status: "active",
+		};
+		const firstBody = `export const owner = "team-plat";\n${"// filler\n".repeat(40)}`;
+		const changedBody = `export const owner = "team-ops";\n${"// filler\n".repeat(40)}`;
+		const readEntry = (id: string, body: string): SessionEntry => ({
+			type: "message",
+			id,
+			parentId: null,
+			timestamp: new Date(200).toISOString(),
+			message: {
+				role: "toolResult",
+				toolCallId: `call-${id}`,
+				toolName: "read",
+				content: [{ type: "text", text: body }],
+				isError: false,
+				timestamp: 200,
+			},
+		});
+		const indexedSource = createSourceReference(readEntry("read-change-a", firstBody));
+		if (!indexedSource?.readContentHash) throw new Error("Expected a read content hash");
+		const record: SemanticRecord = {
+			schemaVersion: 1,
+			recordId: "record-change",
+			frameId: frame.frameId,
+			sourceRefs: [indexedSource],
+			disposition: "drop",
+			semanticTokens: 0,
+			createdAt: 300,
+		};
+		const state: ObserveState = {
+			arm: "frame-forward",
+			currentRunId: "run-change",
+			currentTurnIndex: 0,
+			observationUsed: false,
+			observationActionPending: false,
+			userInvitationPending: false,
+			defaultFrameAttempted: true,
+			activeFrame: frame,
+			frames: [frame],
+			semanticRecords: [record],
+			semanticIndexBatches: [],
+			projectionNoCompressionStreak: 0,
+		};
+		const handlers = new Map<string, (...args: unknown[]) => unknown>();
+		const appendEntry = vi.fn();
+		const pi = {
+			on: (event: string, handler: (...args: unknown[]) => unknown) => handlers.set(event, handler),
+			appendEntry,
+		} as unknown as ExtensionAPI;
+		let resolveComplete: ((response: unknown) => void) | undefined;
+		const complete = vi.fn(
+			() =>
+				new Promise((resolve) => {
+					resolveComplete = resolve;
+				}),
+		);
+		const ctx = {
+			mode: "tui",
+			hasUI: true,
+			model: { id: "model" },
+			modelRegistry: { complete },
+			thinkingLevel: "off",
+			sessionManager: {
+				getBranch: () => [readEntry("read-change-b", changedBody)],
+			},
+			ui: {
+				setStatus: vi.fn(),
+				notify: vi.fn(),
+				theme: { fg: (_color: string, text: string) => text },
+			},
+		} as unknown as ExtensionContext;
+		registerSemanticIndexing(pi, state);
+		const turnStart = handlers.get("turn_start");
+		if (!turnStart) throw new Error("turn_start handler was not registered");
+
+		const indexing = Promise.resolve(turnStart({}, ctx));
+		if (!resolveComplete) throw new Error("Semantic indexing request was not started");
+		resolveComplete({
+			stopReason: "stop",
+			content: [{ type: "text", text: '{"records":[{"sourceId":"entry:read-change-b","disposition":"drop"}]}' }],
+			usage: {
+				input: 10,
+				output: 5,
+				cacheRead: 0,
+				cacheWrite: 0,
+				totalTokens: 15,
+				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+			},
+		});
+		await indexing;
+
+		expect(complete).toHaveBeenCalledOnce();
+		expect(appendEntry).toHaveBeenCalledOnce();
 	});
 });
 
@@ -690,6 +884,214 @@ describe("context projection", () => {
 		expect(projected.messages[0]).toMatchObject({ role: "custom", customType: "observe.semantic-memory" });
 		expect(serialized).toContain("read src/owner.ts: succeeded");
 		expect(serialized).not.toContain("file contents");
+	});
+});
+
+describe("projection metrics and adaptive hint", () => {
+	const usage = {
+		input: 0,
+		output: 0,
+		cacheRead: 0,
+		cacheWrite: 0,
+		totalTokens: 0,
+		cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+	};
+
+	function testFrame(frameId: string): ObserveFrame {
+		return {
+			schemaVersion: 2,
+			frameId,
+			observationEventId: `event-${frameId}`,
+			content: `Track the ${frameId} task.`,
+			createdAt: 100,
+			frameTokens: 8,
+			status: "active",
+		};
+	}
+
+	function testState(arm: ObserveState["arm"], frame: ObserveFrame, records: SemanticRecord[] = []): ObserveState {
+		return {
+			arm,
+			currentRunId: "run-metrics",
+			currentTurnIndex: 0,
+			observationUsed: false,
+			observationActionPending: false,
+			userInvitationPending: false,
+			defaultFrameAttempted: true,
+			activeFrame: frame,
+			frames: [frame],
+			semanticRecords: records,
+			semanticIndexBatches: [],
+			projectionNoCompressionStreak: 0,
+		};
+	}
+
+	function testCtx(): ExtensionContext {
+		return {
+			mode: "tui",
+			ui: { setStatus: vi.fn(), theme: { fg: (_color: string, text: string) => text } },
+		} as unknown as ExtensionContext;
+	}
+
+	it("formats the projection metrics message with replaced counts and token deltas", () => {
+		const projection = {
+			messages: [],
+			projectedTokens: 40,
+			rawTokens: 200,
+			rawContextTokens: 1200,
+			framedContextTokens: 420,
+			replacedSourceIds: ["entry:1", "entry:2"],
+			droppedPreFrameMessages: 3,
+		} as ContextProjectionResult;
+		const message = buildProjectionMetricsMessage(testFrame("frame-metrics"), 5, projection);
+		if (message.role !== "custom") throw new Error("Expected a custom projection metrics message");
+		const content = typeof message.content === "string" ? message.content : "";
+
+		expect(message.customType).toBe(OBSERVE_PROJECTION_METRICS_MESSAGE_TYPE);
+		expect(content).toContain("Frame frame-me");
+		expect(content).toContain("5 post-frame records");
+		expect(content).toContain("replaced 2 sources");
+		expect(content).toContain("dropped 3 pre-frame messages");
+		expect(content).toContain("raw 1.2k tok → frame 420 tok");
+	});
+
+	it("formats the adaptive hint with the streak and token counts", () => {
+		const projection = {
+			messages: [],
+			projectedTokens: 0,
+			rawTokens: 0,
+			rawContextTokens: 3100,
+			framedContextTokens: 3100,
+			replacedSourceIds: [],
+			droppedPreFrameMessages: 0,
+		} as ContextProjectionResult;
+		const message = buildAdaptiveHintMessage(4, projection);
+		if (message.role !== "custom") throw new Error("Expected a custom adaptive hint message");
+		const content = typeof message.content === "string" ? message.content : "";
+
+		expect(message.customType).toBe(OBSERVE_ADAPTIVE_HINT_MESSAGE_TYPE);
+		expect(content).toContain("4 consecutive provider requests");
+		expect(content).toContain("raw 3.1k tok → frame 3.1k tok");
+		expect(content).toContain("call the observe tool");
+	});
+
+	it("injects metrics after the frame on every request", () => {
+		const frame = testFrame("frame-forward");
+		const state = testState("frame-forward", frame);
+		const handlers = new Map<string, (...args: unknown[]) => unknown>();
+		const fakePi = {
+			on: (event: string, handler: (...args: unknown[]) => unknown) => handlers.set(event, handler),
+		} as unknown as ExtensionAPI;
+		registerContextProjection(fakePi, state);
+		const context = handlers.get("context");
+		if (!context) throw new Error("context handler was not registered");
+
+		const message: AgentMessage = { role: "user", content: [{ type: "text", text: "Task." }], timestamp: 200 };
+		const result = context({ messages: [message] }, testCtx()) as { messages: AgentMessage[] };
+
+		expect(result.messages[0]).toMatchObject({ customType: "observe.active-frame" });
+		expect(result.messages[1]).toMatchObject({ customType: OBSERVE_PROJECTION_METRICS_MESSAGE_TYPE });
+		expect(result.messages[2]).toBe(message);
+	});
+
+	it("grows the adaptive streak and injects a reframe hint after sustained no-compression", () => {
+		const frame = testFrame("frame-adaptive");
+		const state = testState("frame-adaptive", frame);
+		const handlers = new Map<string, (...args: unknown[]) => unknown>();
+		const fakePi = {
+			on: (event: string, handler: (...args: unknown[]) => unknown) => handlers.set(event, handler),
+		} as unknown as ExtensionAPI;
+		registerContextProjection(fakePi, state);
+		const context = handlers.get("context");
+		if (!context) throw new Error("context handler was not registered");
+
+		const message: AgentMessage = { role: "user", content: [{ type: "text", text: "Task." }], timestamp: 200 };
+		for (let index = 1; index <= FRAME_ADAPTIVE_NO_COMPRESSION_STREAK; index += 1) {
+			const result = context({ messages: [message] }, testCtx()) as { messages: AgentMessage[] };
+			const types = result.messages
+				.filter((candidate): candidate is Extract<AgentMessage, { role: "custom" }> => candidate.role === "custom")
+				.map((candidate) => candidate.customType);
+			expect(types).toContain(OBSERVE_PROJECTION_METRICS_MESSAGE_TYPE);
+			if (index < FRAME_ADAPTIVE_NO_COMPRESSION_STREAK) {
+				expect(types).not.toContain(OBSERVE_ADAPTIVE_HINT_MESSAGE_TYPE);
+			} else {
+				expect(types).toContain(OBSERVE_ADAPTIVE_HINT_MESSAGE_TYPE);
+			}
+		}
+		expect(state.projectionNoCompressionStreak).toBe(FRAME_ADAPTIVE_NO_COMPRESSION_STREAK);
+	});
+
+	it("resets the adaptive streak and suppresses the hint when the frame compresses", () => {
+		const frame = testFrame("frame-compress");
+		const call: AgentMessage = {
+			role: "assistant",
+			content: [{ type: "toolCall", id: "read-call", name: "read", arguments: { path: "src/owner.ts" } }],
+			api: "openai-responses",
+			provider: "test",
+			model: "test",
+			usage,
+			stopReason: "toolUse",
+			timestamp: 200,
+		};
+		const resultMessage: AgentMessage = {
+			role: "toolResult",
+			toolCallId: "read-call",
+			toolName: "read",
+			content: [{ type: "text", text: `file contents ${"z".repeat(1200)}` }],
+			isError: false,
+			timestamp: 201,
+		};
+		const followUp: AgentMessage = {
+			role: "user",
+			content: [{ type: "text", text: "Continue from the result." }],
+			timestamp: 300,
+		};
+		const callSource = sourceForMessage("read-call-entry", call);
+		const resultSource = sourceForMessage("read-result-entry", resultMessage);
+		const records: SemanticRecord[] = [
+			{
+				schemaVersion: 1,
+				recordId: "record-call",
+				frameId: frame.frameId,
+				sourceRefs: [callSource],
+				disposition: "drop",
+				semanticTokens: 0,
+				createdAt: 300,
+			},
+			{
+				schemaVersion: 1,
+				recordId: "record-result",
+				frameId: frame.frameId,
+				sourceRefs: [resultSource],
+				disposition: "trace",
+				interpretation: "read src/owner.ts: succeeded",
+				semanticTokens: 8,
+				createdAt: 300,
+			},
+		];
+		const state = testState("frame-adaptive", frame, records);
+		state.projectionNoCompressionStreak = FRAME_ADAPTIVE_NO_COMPRESSION_STREAK;
+		const handlers = new Map<string, (...args: unknown[]) => unknown>();
+		const fakePi = {
+			on: (event: string, handler: (...args: unknown[]) => unknown) => handlers.set(event, handler),
+		} as unknown as ExtensionAPI;
+		registerContextProjection(fakePi, state);
+		const context = handlers.get("context");
+		if (!context) throw new Error("context handler was not registered");
+
+		const result = context({ messages: [call, resultMessage, followUp] }, testCtx()) as { messages: AgentMessage[] };
+
+		expect(
+			result.messages.some(
+				(candidate) => candidate.role === "custom" && candidate.customType === "observe.semantic-memory",
+			),
+		).toBe(true);
+		const hint = result.messages.find(
+			(candidate): candidate is Extract<AgentMessage, { role: "custom" }> =>
+				candidate.role === "custom" && candidate.customType === OBSERVE_ADAPTIVE_HINT_MESSAGE_TYPE,
+		);
+		expect(hint).toBeUndefined();
+		expect(state.projectionNoCompressionStreak).toBe(0);
 	});
 });
 

@@ -40,6 +40,7 @@ export default function observeMvpExtension(pi: ExtensionAPI): void {
 		frames: [],
 		semanticRecords: [],
 		semanticIndexBatches: [],
+		projectionNoCompressionStreak: 0,
 	};
 
 	registerObserveTool(pi, state);
@@ -52,6 +53,7 @@ export default function observeMvpExtension(pi: ExtensionAPI): void {
 		state.activeFrame = frameState.activeFrame;
 		state.frames = frameState.frames;
 		state.defaultFrameAttempted = frameState.activeFrame !== undefined;
+		state.projectionNoCompressionStreak = 0;
 	});
 
 	pi.on("before_agent_start", (event, ctx) => {

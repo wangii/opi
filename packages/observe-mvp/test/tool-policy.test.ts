@@ -34,6 +34,15 @@ describe("tool-kind classification", () => {
 		expect(classifyToolKind("bash", "unknown-tool --flag")).toBe("bash-effect");
 		expect(classifyToolKind("bash", undefined)).toBe("bash-effect");
 	});
+
+	it("treats file-writing shell forms as side effects even when read-only looking", () => {
+		expect(classifyToolKind("bash", "echo '{ \"version\": 1 }' > package.json")).toBe("bash-effect");
+		expect(classifyToolKind("bash", "cat > /tmp/out <<EOF")).toBe("bash-effect");
+		expect(classifyToolKind("bash", "printf '%s\\n' x >> notes.txt")).toBe("bash-effect");
+		expect(classifyToolKind("bash", "head -c 5 /dev/urandom > /tmp/rand")).toBe("bash-effect");
+		expect(classifyToolKind("bash", "grep pattern file > out.txt")).toBe("bash-effect");
+		expect(classifyToolKind("bash", "ls -la | tee listing.txt")).toBe("bash-effect");
+	});
 });
 
 describe("source reference tool metadata", () => {
@@ -83,6 +92,33 @@ describe("source reference tool metadata", () => {
 		expect(source).toMatchObject({ role: "user" });
 		expect(source?.toolName).toBeUndefined();
 		expect(source?.command).toBeUndefined();
+		expect(source?.readContentHash).toBeUndefined();
+	});
+
+	it("hashes read content stably across repeated identical reads", () => {
+		const readResult = (id: string, text: string): SessionEntry => ({
+			type: "message",
+			id,
+			parentId: null,
+			timestamp: new Date(200).toISOString(),
+			message: {
+				role: "toolResult",
+				toolCallId: `call-${id}`,
+				toolName: "read",
+				content: [{ type: "text", text }],
+				isError: false,
+				timestamp: 200,
+			},
+		});
+
+		const first = createSourceReference(readResult("read-1", "same file contents"));
+		const second = createSourceReference(readResult("read-2", "same file contents"));
+		const changed = createSourceReference(readResult("read-3", "edited file contents"));
+
+		expect(first?.readContentHash).toMatch(/^[a-f0-9]{64}$/);
+		expect(first?.readContentHash).toBe(second?.readContentHash);
+		expect(first?.readContentHash).not.toBe(changed?.readContentHash);
+		expect(first?.contentHash).not.toBe(second?.contentHash);
 	});
 });
 
@@ -176,9 +212,10 @@ describe("deterministic tool-aware validation", () => {
 	});
 
 	it("budgets reads proportionally with a floor and a cap", () => {
-		expect(readInterpretationBudget(10)).toBe(16);
-		expect(readInterpretationBudget(200)).toBe(20);
-		expect(readInterpretationBudget(2000)).toBe(96);
+		expect(readInterpretationBudget(10)).toBe(32);
+		expect(readInterpretationBudget(200)).toBe(32);
+		expect(readInterpretationBudget(2000)).toBe(250);
+		expect(readInterpretationBudget(10_000)).toBe(256);
 	});
 });
 
