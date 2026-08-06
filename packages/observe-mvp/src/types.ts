@@ -44,6 +44,10 @@ export interface SourceReference {
 	sourceId: string;
 	entryId?: string;
 	role: "user" | "assistant" | "toolResult" | "custom";
+	/** Tool name for tool results, e.g. "read", "edit", "bash". */
+	toolName?: string;
+	/** Original bash command for bash results, resolved from the paired tool call. */
+	command?: string;
 	timestamp: number;
 	contentHash: string;
 	rawTokens: number;

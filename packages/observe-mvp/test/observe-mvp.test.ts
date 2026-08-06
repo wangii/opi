@@ -402,8 +402,8 @@ describe("semantic indexing", () => {
 
 	it("accepts exactly one concise interpretation for every requested source", () => {
 		const prompt = buildSemanticIndexPrompt("Treat this as ownership drift.", [
-			{ sourceId: "entry:1", serialized: "[User]: inspect" },
-			{ sourceId: "entry:2", serialized: "[Assistant]: checking owner" },
+			{ sourceId: "entry:1", serialized: "[User]: inspect", kind: "other", rawTokens: 10 },
+			{ sourceId: "entry:2", serialized: "[Assistant]: checking owner", kind: "other", rawTokens: 12 },
 		]);
 		const parsed = parseSemanticIndexResponse(
 			'{"records":[{"sourceId":"entry:1","disposition":"retain","interpretation":"Ownership is unverified."},{"sourceId":"entry:2","disposition":"trace","interpretation":"Check lifecycle evidence."}]}',
@@ -411,6 +411,8 @@ describe("semantic indexing", () => {
 		);
 
 		expect(prompt).toContain("<active-frame>\nTreat this as ownership drift.\n</active-frame>");
+		expect(prompt).toContain('kind="other" rawTokens="10"');
+		expect(prompt).toContain("Tool-kind retention rules:");
 		expect(parsed).toEqual([
 			{ sourceId: "entry:1", disposition: "retain", interpretation: "Ownership is unverified." },
 			{ sourceId: "entry:2", disposition: "trace", interpretation: "Check lifecycle evidence." },

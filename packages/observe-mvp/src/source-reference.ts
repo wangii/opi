@@ -38,16 +38,28 @@ export function sourceReferenceKey(source: SourceReference): string {
 	return `${source.role}:${source.timestamp}:${source.contentHash}`;
 }
 
-export function createSourceReference(entry: SessionEntry): SourceReference | undefined {
+export interface ToolCallInfo {
+	toolName: string;
+	command?: string;
+}
+
+export function createSourceReference(
+	entry: SessionEntry,
+	toolCalls?: ReadonlyMap<string, ToolCallInfo>,
+): SourceReference | undefined {
 	if (entry.type !== "message") return undefined;
 	const normalized = normalizedSourceMessage(entry.message);
 	if (normalized === undefined) return undefined;
 	const role = entry.message.role;
 	if (role !== "user" && role !== "assistant" && role !== "toolResult" && role !== "custom") return undefined;
+	const toolName = role === "toolResult" ? entry.message.toolName : undefined;
+	const command = role === "toolResult" ? toolCalls?.get(entry.message.toolCallId)?.command : undefined;
 	return {
 		sourceId: `entry:${entry.id}`,
 		entryId: entry.id,
 		role,
+		...(toolName === undefined ? {} : { toolName }),
+		...(command === undefined ? {} : { command }),
 		timestamp: entry.message.timestamp,
 		contentHash: createHash("sha256").update(normalized).digest("hex"),
 		rawTokens: estimateRawMessageTokens(entry.message),

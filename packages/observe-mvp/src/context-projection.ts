@@ -5,6 +5,7 @@ import { isFrameMemoryArm } from "./config.ts";
 import { DEFAULT_FRAME_CONTEXT_MESSAGE_TYPE, isDefaultObserveFrame } from "./default-frame.ts";
 import { estimateFrameTokens } from "./frame-state.ts";
 import { estimateRawMessageTokens, messageReferenceKey, sourceReferenceKey } from "./source-reference.ts";
+import { classifySourceKind } from "./tool-policy.ts";
 import type { ObserveFrame, ObserveState, SemanticRecord, SourceReference } from "./types.ts";
 
 interface ContextUnit {
@@ -132,14 +133,16 @@ function projectRun(
 	const covered = units.flatMap((unit) => unit.covered);
 	const sources = new Map<string, SourceReference>();
 	for (const item of covered) sources.set(item.source.sourceId, item.source);
-	// A semantic model may not discard user intent or operational outcomes. If it
-	// does, fail closed and keep this whole safe message group raw.
+	// A semantic model may not discard user intent or operational outcomes. It
+	// may only discard re-derivable results (read content, bash exploration
+	// output). Otherwise fail closed and keep this whole safe message group raw.
 	if (
-		covered.some(
-			({ record, source }) =>
-				(source.role === "user" && record.disposition !== "retain") ||
-				(source.role === "toolResult" && record.disposition === "drop"),
-		)
+		covered.some(({ record, source }) => {
+			if (source.role === "user" && record.disposition !== "retain") return true;
+			if (source.role !== "toolResult" || record.disposition !== "drop") return false;
+			const kind = classifySourceKind(source);
+			return kind !== "read" && kind !== "bash-explore";
+		})
 	) {
 		return undefined;
 	}

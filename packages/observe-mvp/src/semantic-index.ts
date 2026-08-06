@@ -7,6 +7,20 @@ import { estimateFrameTokens } from "./frame-state.ts";
 import { buildSemanticIndexPrompt, parseSemanticIndexResponse } from "./semantic-index-response.ts";
 import { reconstructSemanticIndexState, SEMANTIC_INDEX_ENTRY_TYPE } from "./semantic-state.ts";
 import { createSourceReference } from "./source-reference.ts";
+import {
+	classifySourceKind,
+	INDEX_BATCH_MAX_COUNT,
+	INDEX_BATCH_MAX_TOKENS,
+	INDEX_NARRATION_CAP,
+	INDEX_TAIL,
+	INDEX_TOOL_CALL_CAP,
+	INDEX_TOOL_RESULT_CAP,
+	isMicroSource,
+	readInterpretationBudget,
+	type ToolKind,
+	truncateSerializedForIndexing,
+	validateToolPolicy,
+} from "./tool-policy.ts";
 import type { ObserveState, SemanticIndexBatch, SemanticRecord, SourceReference } from "./types.ts";
 
 const SEMANTIC_INDEX_STATUS_ID = "observe-semantic-index";
@@ -19,6 +33,8 @@ interface IndexCandidate {
 	entry: Extract<SessionEntry, { type: "message" }>;
 	source: SourceReference;
 	serialized: string;
+	kind: ToolKind;
+	hasToolCall: boolean;
 }
 
 function isObserveLifecycleMessage(entry: Extract<SessionEntry, { type: "message" }>): boolean {
@@ -29,13 +45,55 @@ function isObserveLifecycleMessage(entry: Extract<SessionEntry, { type: "message
 	);
 }
 
+function bashCommandFromCall(part: { type: "toolCall"; name: string; arguments?: unknown }): string | undefined {
+	if (part.name !== "bash") return undefined;
+	const command =
+		typeof part.arguments === "object" && part.arguments !== null
+			? (part.arguments as { command?: unknown }).command
+			: undefined;
+	return typeof command === "string" ? command : undefined;
+}
+
+function serializationCap(message: Extract<SessionEntry, { type: "message" }>["message"]): {
+	maxTokens: number;
+	tailTokens: number;
+} {
+	switch (message.role) {
+		case "user":
+			// User intent must be indexed with full fidelity.
+			return { maxTokens: Number.POSITIVE_INFINITY, tailTokens: 0 };
+		case "toolResult":
+			return { maxTokens: INDEX_TOOL_RESULT_CAP, tailTokens: INDEX_TAIL };
+		case "assistant":
+			if (message.content.some((part) => part.type === "toolCall")) {
+				return { maxTokens: INDEX_TOOL_CALL_CAP, tailTokens: INDEX_TAIL };
+			}
+			return { maxTokens: INDEX_NARRATION_CAP, tailTokens: 0 };
+		default:
+			return { maxTokens: INDEX_TOOL_RESULT_CAP, tailTokens: INDEX_TAIL };
+	}
+}
+
 function indexCandidates(state: ObserveState, entries: SessionEntry[]): IndexCandidate[] {
 	const frame = state.activeFrame;
 	if (!frame) return [];
 	const indexedSourceIds = new Set(
 		state.semanticRecords.flatMap((record) => record.sourceRefs.map((source) => source.sourceId)),
 	);
+	const toolCallById = new Map<string, { toolName: string; command?: string }>();
+	for (const entry of entries) {
+		if (entry.type !== "message" || entry.message.role !== "assistant") continue;
+		for (const part of entry.message.content) {
+			if (part.type !== "toolCall") continue;
+			const command = bashCommandFromCall(part);
+			toolCallById.set(part.id, {
+				toolName: part.name,
+				...(command === undefined ? {} : { command }),
+			});
+		}
+	}
 	const candidates: IndexCandidate[] = [];
+	let batchTokens = 0;
 	for (const entry of entries) {
 		if (
 			entry.type !== "message" ||
@@ -44,14 +102,23 @@ function indexCandidates(state: ObserveState, entries: SessionEntry[]): IndexCan
 		) {
 			continue;
 		}
-		const source = createSourceReference(entry);
+		const source = createSourceReference(entry, toolCallById);
 		if (!source || indexedSourceIds.has(source.sourceId)) continue;
-		candidates.push({
-			entry,
-			source,
-			serialized: serializeConversation(convertToLlm([entry.message])),
-		});
-		if (candidates.length === 16) break;
+		const kind = classifySourceKind(source);
+		if (source.role === "toolResult" && isMicroSource(kind, source.rawTokens)) continue;
+		const hasToolCall =
+			entry.message.role === "assistant" && entry.message.content.some((part) => part.type === "toolCall");
+		const { maxTokens, tailTokens } = serializationCap(entry.message);
+		const serialized = truncateSerializedForIndexing(
+			serializeConversation(convertToLlm([entry.message])),
+			maxTokens,
+			tailTokens,
+		);
+		const serializedTokens = estimateFrameTokens(serialized);
+		if (candidates.length > 0 && batchTokens + serializedTokens > INDEX_BATCH_MAX_TOKENS) break;
+		candidates.push({ entry, source, serialized, kind, hasToolCall });
+		batchTokens += serializedTokens;
+		if (candidates.length >= INDEX_BATCH_MAX_COUNT) break;
 	}
 	return candidates;
 }
@@ -76,7 +143,13 @@ async function generateSemanticIndexBatch(
 							type: "text",
 							text: buildSemanticIndexPrompt(
 								frame.content,
-								candidates.map(({ source, serialized }) => ({ sourceId: source.sourceId, serialized })),
+								candidates.map(({ source, serialized, kind }) => ({
+									sourceId: source.sourceId,
+									serialized,
+									kind,
+									rawTokens: source.rawTokens,
+									...(kind === "read" ? { readBudget: readInterpretationBudget(source.rawTokens) } : {}),
+								})),
 							),
 						},
 					],
@@ -98,10 +171,25 @@ async function generateSemanticIndexBatch(
 		candidates.map(({ source }) => source.sourceId),
 	);
 	if (!interpretations || state.activeFrame?.frameId !== frame.frameId) return undefined;
-	const bySourceId = new Map(interpretations.map((record) => [record.sourceId, record]));
+	const interpretationBySourceId = new Map(interpretations.map((record) => [record.sourceId, record]));
+	const violation = validateToolPolicy(
+		candidates.map(({ source, kind, hasToolCall }) => {
+			const interpretation = interpretationBySourceId.get(source.sourceId);
+			if (interpretation === undefined) throw new Error(`Missing semantic disposition for ${source.sourceId}`);
+			return {
+				role: source.role,
+				kind,
+				hasToolCall,
+				rawTokens: source.rawTokens,
+				disposition: interpretation.disposition,
+				...(interpretation.interpretation === undefined ? {} : { interpretation: interpretation.interpretation }),
+			};
+		}),
+	);
+	if (violation) return undefined;
 	const createdAt = Date.now();
 	const records: SemanticRecord[] = candidates.map(({ source }) => {
-		const semantic = bySourceId.get(source.sourceId);
+		const semantic = interpretationBySourceId.get(source.sourceId);
 		if (semantic === undefined) throw new Error(`Missing semantic disposition for ${source.sourceId}`);
 		return {
 			schemaVersion: 1,

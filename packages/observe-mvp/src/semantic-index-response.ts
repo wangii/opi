@@ -1,6 +1,12 @@
+import type { ToolKind } from "./tool-policy.ts";
+
 export interface SemanticPromptSource {
 	sourceId: string;
 	serialized: string;
+	kind: ToolKind;
+	rawTokens: number;
+	/** Explicit read interpretation budget for read-kind sources. */
+	readBudget?: number;
 }
 
 export interface SemanticInterpretation {
@@ -15,7 +21,12 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 export function buildSemanticIndexPrompt(frame: string, sources: SemanticPromptSource[]): string {
 	const serializedSources = sources
-		.map(({ sourceId, serialized }) => `<source id=${JSON.stringify(sourceId)}>\n${serialized}\n</source>`)
+		.map(
+			({ sourceId, serialized, kind, rawTokens, readBudget }) =>
+				`<source id=${JSON.stringify(sourceId)} kind=${JSON.stringify(kind)} rawTokens=${JSON.stringify(String(rawTokens))}${
+					readBudget === undefined ? "" : ` readBudget=${JSON.stringify(String(readBudget))}`
+				}>\n${serialized}\n</source>`,
+		)
 		.join("\n\n");
 	return `Interpret each source under the active provisional frame and produce the minimum continuation-relevant semantic record.
 
@@ -23,8 +34,8 @@ Requirements:
 - return exactly one record for every source id;
 - choose disposition "retain" for evidence or commitments needed later;
 - choose disposition "trace" for a minimal operational fact such as an action and whether it succeeded;
-- choose disposition "drop" only for redundant assistant narration that adds no future value under this frame;
-- never drop a user message, user commitment, assistant tool call, or tool result;
+- choose disposition "drop" only for redundant assistant narration or for read/exploration results that add no future value under this frame;
+- never drop a user message, user commitment, or assistant tool call;
 - for every tool call/result, keep a concise operational trace of what was attempted, whether it succeeded or failed, and any substantive finding or state change;
 - retain assistant decisions, conclusions, plans, file changes, and unresolved blockers; drop only redundant narration;
 - preserve evidence that contradicts or pressures the frame;
@@ -32,6 +43,15 @@ Requirements:
 - do not copy raw wording when a shorter interpretation is sufficient;
 - do not invent source ids;
 - make retained and trace interpretations cheaper than their raw sources.
+
+Tool-kind retention rules:
+- user messages: always "retain";
+- assistant tool calls: never "drop" (they record what was attempted);
+- edit/write calls and results: always "retain"; include file path, what changed, intent, and verification status; never "trace"-only or "drop";
+- bash results with side effects (install, commit, move/delete, tests, builds): never "drop"; keep whether it succeeded and the key error or outcome;
+- bash exploration (ls, find, grep, cat, head, tail): at most a one-line "trace", or "drop" when nothing useful was learned;
+- read results (files stay on disk and can be re-read): keep only the facts that matter under the frame; "drop" is allowed when nothing frame-relevant was learned; retained/traced interpretations must not exceed the source's stated read budget;
+- other tool results: never "drop"; keep a concise operational trace.
 
 For "retain" and "trace", include a non-empty interpretation. For "drop", omit interpretation.
 Return only JSON with this shape:
