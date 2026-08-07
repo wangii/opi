@@ -2,7 +2,6 @@ import { contentText, uuidv7 } from "@earendil-works/pi-ai";
 import type { ExtensionAPI, ExtensionContext, SessionEntry } from "@earendil-works/pi-coding-agent";
 import { convertToLlm, serializeConversation } from "@earendil-works/pi-coding-agent";
 import { isFrameMemoryArm } from "./config.ts";
-import { isDefaultObserveFrame } from "./default-frame.ts";
 import { estimateFrameTokens } from "./frame-state.ts";
 import { buildSemanticIndexPrompt, parseSemanticIndexResponse } from "./semantic-index-response.ts";
 import { reconstructSemanticIndexState, SEMANTIC_INDEX_ENTRY_TYPE } from "./semantic-state.ts";
@@ -114,11 +113,7 @@ function indexCandidates(state: ObserveState, entries: SessionEntry[]): IndexCan
 	const candidates: IndexCandidate[] = [];
 	let batchTokens = 0;
 	for (const entry of entries) {
-		if (
-			entry.type !== "message" ||
-			(!isDefaultObserveFrame(frame) && entry.message.timestamp < frame.createdAt) ||
-			isObserveLifecycleMessage(entry)
-		) {
+		if (entry.type !== "message" || entry.message.timestamp < frame.createdAt || isObserveLifecycleMessage(entry)) {
 			continue;
 		}
 		const source = createSourceReference(entry, toolCallById);

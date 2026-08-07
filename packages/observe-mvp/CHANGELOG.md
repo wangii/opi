@@ -14,11 +14,25 @@
   window restarts after a successful `observe` or a session reset.
 - Observe prompt guidelines now list concrete reframe triggers (contradicting
   evidence, changed goal or constraints, non-compressing projection metrics).
+- Redefined the frame: a frame is now a provisional, action-guiding task-state
+  model that names the focus to observe and the reframe conditions (which
+  actions or results, once they occur, require revising the frame), instead of
+  a summary of repository rules.
+- The default frame is now derived deterministically from the session's first
+  user prompt (a normalized, bounded task anchor), not from the `AGENTS.md`
+  hierarchy; repository rules stay in the system prompt via context files.
 
 ### Changed
 
 - `ObserveState` gains `projectionNoCompressionStreak` to track consecutive
   no-compression provider requests for adaptive reframing.
+- The default frame is treated as a first-class frame: the `isDefaultObserveFrame`
+  special-casing was removed, so frame-conditioned semantic memory and
+  pre-frame dropping apply to the prompt-derived default frame like any other
+  frame.
+- `DefaultObserveFrameDetails` becomes schema version 2 with a `promptAnchor`
+  field; schema version 1 entries (AGENTS-derived) are still accepted during
+  reconstruction for older session JSONL.
 
 ### Fixed
 

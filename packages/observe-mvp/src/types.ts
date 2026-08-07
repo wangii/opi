@@ -35,9 +35,10 @@ export interface ObserveAttemptDetails {
 }
 
 export interface DefaultObserveFrameDetails {
-	schemaVersion: 1;
+	schemaVersion: 2;
 	frame: ObserveFrame;
-	sources: Array<{ path: string; contentHash: string }>;
+	/** Cleaned first-prompt excerpt the default frame was derived from. */
+	promptAnchor: string;
 }
 
 export interface SourceReference {

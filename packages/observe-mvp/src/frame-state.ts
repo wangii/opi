@@ -64,7 +64,10 @@ export function reconstructObserveFrameState(entries: SessionEntry[]): ObserveFr
 		let frame: ObserveFrame | undefined;
 		if (entry.type === "custom" && entry.customType === DEFAULT_FRAME_ENTRY_TYPE) {
 			const details = entry.data;
-			if (isRecord(details) && details.schemaVersion === 1) frame = parseObserveFrame(details.frame);
+			// schemaVersion 1 (AGENTS-derived) and 2 (task-state) both carry `frame`.
+			if (isRecord(details) && (details.schemaVersion === 1 || details.schemaVersion === 2)) {
+				frame = parseObserveFrame(details.frame);
+			}
 		} else if (
 			entry.type === "message" &&
 			entry.message.role === "toolResult" &&

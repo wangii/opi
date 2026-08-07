@@ -15,7 +15,7 @@ import {
 	projectFrameContext,
 	registerContextProjection,
 } from "../src/context-projection.ts";
-import { DEFAULT_FRAME_ENTRY_TYPE, deriveDefaultFrame } from "../src/default-frame.ts";
+import { DEFAULT_FRAME_ENTRY_TYPE, deriveDefaultFrame, MAX_TASK_ANCHOR_LENGTH } from "../src/default-frame.ts";
 import { calculateFrameCost, hasFrameCompressionFailed } from "../src/frame-cost.ts";
 import { reconstructObserveFrameState } from "../src/frame-state.ts";
 import { OBSERVE_PROMPT_GUIDELINES, OBSERVE_TOOL_DESCRIPTION } from "../src/observe-prompt.ts";
@@ -109,32 +109,29 @@ describe("observe configuration", () => {
 });
 
 describe("default observe frame", () => {
-	it("derives a concise operating frame from the active AGENTS.md hierarchy", () => {
-		const derived = deriveDefaultFrame(
-			[
-				{
-					path: "/repo/AGENTS.md",
-					content: "# Rules\n\n## Code Quality\nInspect before editing.\n\n## Commands\nRun checks.",
-				},
-				{
-					path: "/repo/packages/pkg/AGENTS.override.md",
-					content: "# Local Rules\n\n## Commands\nRun the focused test.\n\n## User Override\nAsk first.",
-				},
-				{ path: "/repo/packages/pkg/CLAUDE.md", content: "Not part of the AGENTS hierarchy." },
-			],
-			"/repo/packages/pkg",
-		);
+	it("derives an action-guiding task-state frame from the first prompt", () => {
+		const derived = deriveDefaultFrame("Review the last two commits and verify the tool-policy guards.");
 
-		expect(derived?.content).toContain("../../AGENTS.md -> AGENTS.override.md");
-		expect(derived?.content).toContain("Code Quality; Commands; User Override");
-		expect(derived?.content.match(/Commands/g)).toHaveLength(1);
-		expect(derived?.sources).toHaveLength(2);
-		expect(derived?.sources.every((source) => source.contentHash.length === 64)).toBe(true);
-		expect(derived?.activationSourceRef).toMatch(/^context-files:[a-f0-9]{64}$/);
+		expect(derived?.promptAnchor).toBe("Review the last two commits and verify the tool-policy guards.");
+		expect(derived?.content).toContain("Provisional task-state frame");
+		expect(derived?.content).toContain(
+			'Focus (observe these dimensions): deliver the goal "Review the last two commits and verify the tool-policy guards."',
+		);
+		expect(derived?.content).toContain("Reframe when (call observe to record a revised frame)");
+		expect(derived?.content).toContain("projection metrics show this frame no longer compresses");
+		expect(derived?.activationSourceRef).toMatch(/^prompt:[a-f0-9]{64}$/);
 	});
 
-	it("does not create an AGENTS-derived frame when no AGENTS file is active", () => {
-		expect(deriveDefaultFrame([{ path: "/repo/CLAUDE.md", content: "Fallback rules" }], "/repo")).toBeUndefined();
+	it("normalizes whitespace and bounds the task anchor", () => {
+		expect(deriveDefaultFrame("  alpha\n\n beta   gamma  ")?.promptAnchor).toBe("alpha beta gamma");
+		const long = deriveDefaultFrame("x ".repeat(300));
+		expect(long?.promptAnchor).toHaveLength(MAX_TASK_ANCHOR_LENGTH);
+		expect(long?.promptAnchor.endsWith("…")).toBe(true);
+	});
+
+	it("does not create a default frame without a task prompt", () => {
+		expect(deriveDefaultFrame(undefined)).toBeUndefined();
+		expect(deriveDefaultFrame("   \n  ")).toBeUndefined();
 	});
 });
 
@@ -280,9 +277,10 @@ describe("active Observe frame context", () => {
 });
 
 describe("observe prompt contract", () => {
-	it("requires frames to be concise and treats compression failure as an observe trigger", () => {
+	it("requires frames to be action-guiding and treats compression failure as an observe trigger", () => {
+		expect(OBSERVE_TOOL_DESCRIPTION).toContain("action-guiding");
 		expect(OBSERVE_TOOL_DESCRIPTION).toContain("cheaper than equivalent raw context");
-		expect(OBSERVE_TOOL_DESCRIPTION).toContain("without copying evidence");
+		expect(OBSERVE_TOOL_DESCRIPTION).toContain("Do not copy evidence already available through source references");
 		expect(OBSERVE_PROMPT_GUIDELINES).toContain(
 			"Use observe when the active frame no longer compresses a meaningful window of task-relevant information.",
 		);
@@ -684,14 +682,14 @@ describe("context projection", () => {
 		cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
 	};
 
-	it("keeps older raw messages under an AGENTS-derived default frame until they are indexed", () => {
+	it("keeps older raw messages under a prompt-derived default frame until they are indexed", () => {
 		const frame: ObserveFrame = {
 			schemaVersion: 2,
 			frameId: "frame-default",
 			observationEventId: "default:event",
-			content: "Use the active AGENTS.md as the operating frame.",
+			content: 'Provisional task-state frame: deliver the goal "Inspect the lifecycle".',
 			createdAt: 200,
-			activationSourceRef: `context-files:${"b".repeat(64)}`,
+			activationSourceRef: `prompt:${"b".repeat(64)}`,
 			frameTokens: 12,
 			status: "active",
 		};
@@ -708,6 +706,58 @@ describe("context projection", () => {
 		expect(projected.messages).toEqual([message]);
 		expect(projected.rawContextTokens).toBe(projected.framedContextTokens);
 		expect(projected.droppedPreFrameMessages).toBe(0);
+	});
+
+	it("keeps pre-frame user intent raw even when the batch has covered post-frame records", () => {
+		const frame: ObserveFrame = {
+			schemaVersion: 2,
+			frameId: "frame-pre-user",
+			observationEventId: "event-pre-user",
+			content: "Provisional task-state frame: deliver the goal.",
+			createdAt: 200,
+			activationSourceRef: `prompt:${"c".repeat(64)}`,
+			frameTokens: 10,
+			status: "active",
+		};
+		const user: AgentMessage = {
+			role: "user",
+			content: [{ type: "text", text: "Preserve this task request." }],
+			timestamp: 100,
+		};
+		const postFrame: AgentMessage = {
+			role: "assistant",
+			content: [{ type: "text", text: `Narration ${"n".repeat(800)}` }],
+			api: "openai-responses",
+			provider: "test",
+			model: "test",
+			usage,
+			stopReason: "stop",
+			timestamp: 300,
+		};
+		const source = sourceForMessage("post-frame-narration", postFrame);
+		const record: SemanticRecord = {
+			schemaVersion: 1,
+			recordId: "record-post-frame",
+			frameId: frame.frameId,
+			sourceRefs: [source],
+			disposition: "trace",
+			interpretation: "acknowledged task",
+			semanticTokens: 4,
+			createdAt: 300,
+		};
+
+		const projected = projectFrameContext([user, postFrame], frame, [record]);
+
+		// The pre-frame user message has no record under this frame and must not
+		// be folded into the memory text; only the covered post-frame narration
+		// may be replaced.
+		expect(projected.messages).toContain(user);
+		expect(
+			projected.messages.some(
+				(message) => message.role === "custom" && message.customType === "observe.semantic-memory",
+			),
+		).toBe(true);
+		expect(JSON.stringify(projected.messages)).not.toContain("Narration");
 	});
 
 	it("keeps the latest user request raw even when indexing marks it drop", () => {

@@ -56,9 +56,14 @@ The available arms are:
 - `frame-forward` — frame-conditioned semantic memory is enabled for future messages;
 - `frame-adaptive` — frame-conditioned semantic memory and adaptive reframing are enabled (an explicit hint invites a reframe when the frame stops compressing context across consecutive requests);
 
-For frame-memory arms, the first turn derives a concise default operating frame
-from Pi's currently loaded `AGENTS.md` hierarchy. It uses the already loaded
-context-file metadata and does not make a separate model request. Before each
+For frame-memory arms, the first turn derives a default frame from the
+session's first user prompt, without a separate model request. A frame is
+defined as a provisional, action-guiding task-state model, not as an
+instruction source: it names the focus to observe (the current goal and the
+dimensions that bear on delivering it) and the reframe conditions (which
+actions or results, once they occur, require revising the frame with
+`observe`). Repository rules are not part of the frame; they already live in
+the system prompt through context files. Before each
 provider request, the active frame is injected once as an ephemeral, explicitly
 provisional context message before the task history, rather than as the latest
 user message or a system instruction. A later `observe` call supersedes the

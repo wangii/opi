@@ -1,93 +1,50 @@
 import { createHash } from "node:crypto";
-import { basename, relative } from "node:path";
-import type { BuildSystemPromptOptions } from "@earendil-works/pi-coding-agent";
-import type { DefaultObserveFrameDetails, ObserveFrame } from "./types.ts";
 
 export const DEFAULT_FRAME_ENTRY_TYPE = "observe.default-frame";
 export const DEFAULT_FRAME_CONTEXT_MESSAGE_TYPE = "observe.default-frame-context";
 
-const MAX_RULE_AREAS = 10;
-const MAX_RULE_AREAS_LENGTH = 320;
+export const MAX_TASK_ANCHOR_LENGTH = 240;
 
-function isAgentsFile(path: string): boolean {
-	return /^AGENTS(?:\.override)?\.md$/i.test(basename(path));
-}
-
-function cleanHeading(heading: string): string {
-	return heading
-		.replace(/\[([^\]]+)]\([^)]*\)/g, "$1")
-		.replace(/[`*_~]/g, "")
-		.replace(/\s+#+\s*$/, "")
-		.trim();
-}
-
-function ruleAreas(content: string): string[] {
-	const areas: string[] = [];
-	const seen = new Set<string>();
-	for (const line of content.split(/\r?\n/)) {
-		const match = line.match(/^#{2,3}\s+(.+)$/);
-		if (!match) continue;
-		const area = cleanHeading(match[1]);
-		if (!area || seen.has(area.toLowerCase())) continue;
-		seen.add(area.toLowerCase());
-		areas.push(area);
-	}
-	return areas;
-}
-
-function displayPath(path: string, cwd: string): string {
-	const fromCwd = relative(cwd, path);
-	return (fromCwd || basename(path)).replace(/\\/g, "/");
-}
-
-function boundedRuleAreas(areas: string[]): string[] {
-	const selected: string[] = [];
-	const seen = new Set<string>();
-	let length = 0;
-	for (const area of areas) {
-		const normalized = area.toLowerCase();
-		if (seen.has(normalized)) continue;
-		const nextLength = length + area.length + (selected.length === 0 ? 0 : 2);
-		if (selected.length === MAX_RULE_AREAS || nextLength > MAX_RULE_AREAS_LENGTH) break;
-		seen.add(normalized);
-		selected.push(area);
-		length = nextLength;
-	}
-	return selected;
+/**
+ * Normalized, bounded excerpt of a user prompt used as the task anchor. A
+ * frame is a task-state model, so the default frame anchors on the actual
+ * goal rather than on repository rules (which already live in the system
+ * prompt through context files).
+ */
+function taskAnchor(prompt: string | undefined): string | undefined {
+	if (!prompt) return undefined;
+	const cleaned = prompt.replace(/\s+/g, " ").trim();
+	if (!cleaned) return undefined;
+	return cleaned.length <= MAX_TASK_ANCHOR_LENGTH ? cleaned : `${cleaned.slice(0, MAX_TASK_ANCHOR_LENGTH - 1)}…`;
 }
 
 export interface DefaultFrameDerivation {
 	content: string;
-	sources: DefaultObserveFrameDetails["sources"];
+	promptAnchor: string;
 	activationSourceRef: string;
 }
 
-export function deriveDefaultFrame(
-	contextFiles: BuildSystemPromptOptions["contextFiles"],
-	cwd: string,
-): DefaultFrameDerivation | undefined {
-	const agentsFiles = (contextFiles ?? []).filter((file) => isAgentsFile(file.path));
-	if (agentsFiles.length === 0) return undefined;
-
-	const sources = agentsFiles.map((file) => ({
-		path: file.path,
-		contentHash: createHash("sha256").update(file.content).digest("hex"),
-	}));
-	const paths = agentsFiles.map((file) => displayPath(file.path, cwd));
-	const areas = boundedRuleAreas(agentsFiles.flatMap((file) => ruleAreas(file.content)));
-	const scope =
-		paths.length === 1
-			? `the active AGENTS.md at ${paths[0]}`
-			: `the active AGENTS.md hierarchy (${paths.join(" -> ")}), with later and nearer scopes taking precedence`;
-	const content = `Use ${scope} as the initial operating frame.${
-		areas.length === 0 ? "" : ` Treat the task as constrained by these rule areas: ${areas.join("; ")}.`
-	} Keep interpretations provisional where those instructions do not decide the task.`;
-	const activationSourceRef = `context-files:${createHash("sha256")
-		.update(sources.map((source) => `${source.path}:${source.contentHash}`).join("\n"))
-		.digest("hex")}`;
-	return { content, sources, activationSourceRef };
-}
-
-export function isDefaultObserveFrame(frame: ObserveFrame | undefined): boolean {
-	return frame?.activationSourceRef?.startsWith("context-files:") ?? false;
+/**
+ * A frame is a provisional, action-guiding hypothesis: it names what to
+ * observe (the focus) and the conditions under which it must be corrected
+ * (reframe triggers). The default frame is derived deterministically from the
+ * session's first prompt; agent-authored frames (via observe) carry the same
+ * structure and may make both parts fully task-specific.
+ */
+export function deriveDefaultFrame(prompt: string | undefined): DefaultFrameDerivation | undefined {
+	const anchor = taskAnchor(prompt);
+	if (anchor === undefined) return undefined;
+	const content = [
+		"Provisional task-state frame: a hypothesis that guides what to observe and when to reframe, not an instruction source.",
+		"",
+		`Focus (observe these dimensions): deliver the goal "${anchor}". Attend to evidence, decisions, constraints, and results that bear on it; track what is established, what is open, and what would change the next actions.`,
+		"",
+		"Reframe when (call observe to record a revised frame):",
+		"- the goal above is delivered to the user and verified, or the user ends it;",
+		"- the user redirects the task to a materially different goal;",
+		"- evidence or user corrections contradict this focus;",
+		"- the injected projection metrics show this frame no longer compresses task-relevant context.",
+	].join("\n");
+	const activationSourceRef = `prompt:${createHash("sha256").update(anchor).digest("hex")}`;
+	return { content, promptAnchor: anchor, activationSourceRef };
 }

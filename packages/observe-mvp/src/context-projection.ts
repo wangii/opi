@@ -2,10 +2,10 @@ import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { ACTIVE_FRAME_CONTEXT_MESSAGE_TYPE, prependActiveFrameToContext } from "./active-frame-prompt.ts";
 import { isFrameMemoryArm } from "./config.ts";
-import { DEFAULT_FRAME_CONTEXT_MESSAGE_TYPE, isDefaultObserveFrame } from "./default-frame.ts";
+import { DEFAULT_FRAME_CONTEXT_MESSAGE_TYPE } from "./default-frame.ts";
 import { estimateFrameTokens } from "./frame-state.ts";
 import { estimateRawMessageTokens, messageReferenceKey, sourceReferenceKey } from "./source-reference.ts";
-import { classifySourceKind } from "./tool-policy.ts";
+import { classifySourceKind, classifyToolKind } from "./tool-policy.ts";
 import type { ObserveFrame, ObserveState, SemanticRecord, SourceReference } from "./types.ts";
 
 interface ContextUnit {
@@ -258,9 +258,7 @@ export function projectFrameContext(
 			return key === undefined ? undefined : recordBySourceKey.get(key);
 		});
 		const activeFrameUnit = isActiveFrameUnit(unit, activeFrame);
-		const preFrame =
-			!isDefaultObserveFrame(activeFrame) &&
-			(activeFrameUnit || unit.messages.every((message) => message.timestamp < activeFrame.createdAt));
+		const preFrame = activeFrameUnit || unit.messages.every((message) => message.timestamp < activeFrame.createdAt);
 		const protectsLatestUser = latestUser !== undefined && unit.messages.includes(latestUser);
 		const protectsLatestToolBatch =
 			unit === latestUnit &&
@@ -268,7 +266,22 @@ export function projectFrameContext(
 			unit.messages.some(
 				(message) => message.role === "assistant" && message.content.some((part) => part.type === "toolCall"),
 			);
-		if (protectsLatestUser || protectsLatestToolBatch) {
+		// Pre-frame history has no semantic records under the active frame (the
+		// indexer only records post-frame messages), so the fail-closed guard in
+		// projectRun cannot see it. Never drop pre-frame units that carry user
+		// intent or non-re-derivable tool outcomes; only narration and read-like
+		// exploration may fold into the frame's memory text. The unit that
+		// activated the frame is exempt: its content lives in the frame itself.
+		const preFrameProtected =
+			preFrame &&
+			!activeFrameUnit &&
+			unit.messages.some((message) => {
+				if (message.role === "user") return true;
+				if (message.role !== "toolResult") return false;
+				const kind = classifyToolKind(message.toolName);
+				return kind !== "read" && kind !== "bash-explore";
+			});
+		if (protectsLatestUser || protectsLatestToolBatch || preFrameProtected) {
 			flush();
 			projected.push(...unit.messages);
 			continue;

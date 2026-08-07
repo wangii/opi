@@ -56,13 +56,13 @@ export default function observeMvpExtension(pi: ExtensionAPI): void {
 		state.projectionNoCompressionStreak = 0;
 	});
 
-	pi.on("before_agent_start", (event, ctx) => {
+	pi.on("before_agent_start", (event) => {
 		syncArm(pi, state);
 		if (!isFrameMemoryArm(state.arm)) return undefined;
 
 		if (!state.activeFrame && !state.defaultFrameAttempted) {
 			state.defaultFrameAttempted = true;
-			const derived = deriveDefaultFrame(event.systemPromptOptions.contextFiles, ctx.cwd);
+			const derived = deriveDefaultFrame(event.prompt);
 			if (derived) {
 				const timestamp = Date.now();
 				const frame: ObserveFrame = {
@@ -76,9 +76,9 @@ export default function observeMvpExtension(pi: ExtensionAPI): void {
 					status: "active",
 				};
 				const details: DefaultObserveFrameDetails = {
-					schemaVersion: 1,
+					schemaVersion: 2,
 					frame,
-					sources: derived.sources,
+					promptAnchor: derived.promptAnchor,
 				};
 				pi.appendEntry<DefaultObserveFrameDetails>(DEFAULT_FRAME_ENTRY_TYPE, details);
 				const activated = activateObserveFrame(state, frame);
